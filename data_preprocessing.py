@@ -1,5 +1,5 @@
 import pandas as pd
-from normalize_text import clean_text_dataset, remove_words
+from normalize_text import clean_text_dataset, remove_words, normalize_phone
 
 
 def data_preprocessing(
@@ -45,6 +45,10 @@ def data_preprocessing(
     external_parties = clean_text_dataset(
         external_parties, "parsed_address_street_name", name=False
     )
+    
+    # Apply phone number normalization
+    print(f"Normalizing phone numbers")
+    external_parties["party_phone"] = external_parties["party_phone"].apply(normalize_phone)
 
     # Delete common words for names
     remove = [

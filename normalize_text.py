@@ -49,6 +49,13 @@ def remove_words(df: pd.DataFrame, col_name: str, words: list) -> pd.DataFrame:
     )
     return df
 
+# Phone number normalization function
+def normalize_phone(phone):
+    if pd.isnull(phone):
+        return ''
+    phone = re.sub(r'[^\d]', '', phone)  # Keep digits only
+    return str(phone)
+
 
 if __name__ == "__main__":
     # Load dataset
@@ -58,6 +65,9 @@ if __name__ == "__main__":
     df = clean_text_dataset(df, "parsed_name", name=True)
     # Clean addresses
     df = clean_text_dataset(df, "parsed_address_street_name", name=False)
+    
+    # Apply phone number normalization
+    df["party_phone"] = df["party_phone"].apply(normalize_phone)
 
     # Define common words to remove
     remove = [
