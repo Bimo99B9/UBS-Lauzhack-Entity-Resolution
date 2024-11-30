@@ -207,6 +207,9 @@ def main():
         cluster_id = find(record_id)
         clusters[cluster_id].add(record_id)
 
+    # Create predicted_external_id column
+    df['predicted_external_id'] = df['record_id'].apply(lambda x: find(x))
+
     ################ EVALUATION ################
 
     # Ground truth clusters based on 'external_id'
