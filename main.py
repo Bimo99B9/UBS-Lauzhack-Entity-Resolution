@@ -176,6 +176,24 @@ def main():
         else:
             unmatched_candidate_pairs.append(pair)
     
+
+
+
+
+    party_iban_to_record_ids = df.groupby('party_iban')['record_id'].apply(list).to_dict()
+
+    # Do the same for 'party_phone'
+    party_phone_to_record_ids = df.groupby('party_phone')['record_id'].apply(list).to_dict()
+    
+
+    for record_ids in party_iban_to_record_ids.values():
+        if len(record_ids) > 1:
+            for pair in combinations(record_ids, 2):
+                matched_pairs.add(tuple(sorted(pair)))    
+    for record_ids in party_phone_to_record_ids.values():
+        if len(record_ids) > 1:
+            for pair in combinations(record_ids, 2):
+                matched_pairs.add(tuple(sorted(pair)))
     ###############################################
 
     # Union-Find implementation
