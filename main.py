@@ -140,14 +140,8 @@ def main():
 
     ################ PAIRING STRATEGY ################
 
-    # Create a mapping from composite keys to record IDs:
-    # composite_key = (minhash_bucket, simhash_value)
-    # This might be too strict, consider finding neighbors over different LSHashes independently
+    # Create a mapping from composite keys to record IDs
     composite_key_to_records = defaultdict(set)
-
-    # for record_id in df['record_id']:
-    #     key = create_composite_key(record_id, name_lsh, name_minhashes, df)
-    #     composite_key_to_records[key].add(record_id)
 
     # Just use the minhash for now
     for record_id in df["record_id"]:
@@ -157,26 +151,30 @@ def main():
 
     # Generate candidate pairs within each composite bucket
     candidate_pairs = set()
+    candidate_pairs_similarity = {}
 
     for records in composite_key_to_records.values():
         if len(records) > 1:
             for pair in combinations(records, 2):
                 candidate_pairs.add(tuple(sorted(pair)))
-    print(f"Candidate pairs: {len(candidate_pairs)}")
 
     # Set a similarity threshold
     similarity_threshold = 0.4
 
-    # List to store matched pairs
+    # Lists to store matched pairs and their similarity scores
     matched_pairs = []
+    unmatched_candidate_pairs = []
 
     for pair in candidate_pairs:
         first = df.loc[df["record_id"] == pair[0]].iloc[0]
         second = df.loc[df["record_id"] == pair[1]].iloc[0]
         sim_score = compute_similarity(first, second)
+        # Store the similarity score for the candidate pair
+        candidate_pairs_similarity[pair] = sim_score
         if sim_score >= similarity_threshold:
             matched_pairs.append(pair)
-    print(f"Matched pairs: {len(matched_pairs)}")
+        else:
+            unmatched_candidate_pairs.append(pair)
 
     ###############################################
 
@@ -217,9 +215,11 @@ def main():
         ground_truth[external_id].add(record_id)
 
     # Predicted clusters are stored in 'clusters'
+
     def get_all_pairs(cluster_dict):
         pairs = set()
         for records in cluster_dict.values():
+            records = list(records)
             if len(records) > 1:
                 for pair in combinations(records, 2):
                     pairs.add(tuple(sorted(pair)))
@@ -230,15 +230,9 @@ def main():
     predicted_pairs = get_all_pairs(clusters)
 
     # Compute True Positives (TP), False Positives (FP), and False Negatives (FN)
-    TP = len(
-        true_pairs.intersection(predicted_pairs)
-    )  # (A, B) match and we predicted (A, B)
-    FP = len(
-        predicted_pairs.difference(true_pairs)
-    )  # (A, C) dont match but we predicted (A, C)
-    FN = len(
-        true_pairs.difference(predicted_pairs)
-    )  # (A, B) match but we did not predict (A, B)
+    TP = len(true_pairs.intersection(predicted_pairs))
+    FP = len(predicted_pairs.difference(true_pairs))
+    FN = len(true_pairs.difference(predicted_pairs))
 
     # Precision, Recall, F1-Score
     precision = TP / (TP + FP) if (TP + FP) > 0 else 0
@@ -250,6 +244,62 @@ def main():
     print(f"Precision: {precision:.2f}")
     print(f"Recall: {recall:.2f}")
     print(f"F1-Score: {f1_score:.2f}")
+
+    ################ ANALYZE MISSED PAIRS ################
+
+    # Identify False Negative pairs (missed pairs)
+    fn_pairs = true_pairs.difference(predicted_pairs)
+
+    missed_pairs_info = []
+
+    for pair in fn_pairs:
+        record_id1, record_id2 = pair
+        record1 = df.loc[df["record_id"] == record_id1].iloc[0]
+        record2 = df.loc[df["record_id"] == record_id2].iloc[0]
+
+        # Check if the pair was a candidate pair
+        if pair in candidate_pairs or (record_id2, record_id1) in candidate_pairs:
+            # They were compared but similarity score was below threshold
+            sim_score = candidate_pairs_similarity.get(
+                pair
+            ) or candidate_pairs_similarity.get((record_id2, record_id1))
+            reason = f"Low similarity score ({sim_score:.2f})"
+        else:
+            # They were not compared; likely in different blocks
+            sim_score = None
+            reason = "Different blocks (not compared)"
+
+        # Collect information for exporting
+        missed_pairs_info.append(
+            {
+                "record_id_1": record_id1,
+                "parsed_name_1": record1["parsed_name"],
+                "external_id_1": record1["external_id"],
+                "record_id_2": record_id2,
+                "parsed_name_2": record2["parsed_name"],
+                "external_id_2": record2["external_id"],
+                "similarity_score": sim_score,
+                "reason": reason,
+            }
+        )
+
+    # Create a DataFrame from the missed pairs information
+    missed_pairs_df = pd.DataFrame(missed_pairs_info)
+
+    # Save to CSV file
+    missed_pairs_df.to_csv("missed_pairs_analysis.csv", index=False)
+
+    print(f"Number of missed pairs: {len(missed_pairs_df)}")
+    print(
+        "Missed pairs with explanations have been saved to 'missed_pairs_analysis.csv'"
+    )
+
+    ################ OPTIONAL: ANALYSIS ################
+
+    # Analyze reasons for missing pairs
+    reasons_counts = missed_pairs_df["reason"].value_counts()
+    print("\nReasons for missing pairs:")
+    print(reasons_counts)
 
     """
     # jaccard distance, cosine or distance metrics that take into account missing dimensions, GPS
