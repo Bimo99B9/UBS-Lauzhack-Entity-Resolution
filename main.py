@@ -316,5 +316,5 @@ def main(df, cols = ['parsed_name', 'parsed_address_street_name'],
         
 if __name__ == "__main__":
     df = pd.read_csv("data/processed/external_parties_train.csv")
-    main(df, cols = ['parsed_name', 'parsed_address_street_name'], thres=[0.25, 0.8], ngram=[4, 3], num_perm=128)
+    main(df, cols = ['parsed_name', 'parsed_address_street_name', 'parsed_address_city'], thres=[0.25, 0.8, 0.8], ngram=[2, 3, 3], num_perm=128)
     # main()
