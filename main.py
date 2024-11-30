@@ -5,7 +5,6 @@ from datasketch import MinHash, MinHashLSH
 from simhash import Simhash
 from itertools import combinations
 from collections import defaultdict
-from rapidfuzz.distance import JaroWinkler
 
 
 def get_minhash(text, num_perm=128, ngram_size=3):
@@ -29,43 +28,6 @@ def get_simhash(text):
     return Simhash(text)
 
 
-# Function to compute detailed similarity between two records
-# def compute_similarity(df, record_id1, record_id2):
-#     row1 = df.loc[df["record_id"] == record_id1].iloc[0]
-#     row2 = df.loc[df["record_id"] == record_id2].iloc[0]
-
-#     # Name similarity using Jaro-Winkler
-#     name_similarity = JaroWinkler.distance(row1["parsed_name"], row2["parsed_name"])
-
-#     # Address similarity using Jaro-Winkler
-#     # address_similarity = JaroWinkler.distance(
-#     #     row1["full_address"], row2["full_address"]
-#     # )
-
-#     # IBAN similarity (exact match)
-#     iban_similarity = 1 if row1["party_iban"] == row2["party_iban"] else 0
-
-#     # Phone similarity (exact match)
-#     phone_similarity = 1 if row1["party_phone"] == row2["party_phone"] else 0
-
-#     # Weighted average of similarities
-#     # similarities = np.array(
-#     #     [name_similarity, address_similarity, iban_similarity, phone_similarity]
-#     # )
-#     similarities = np.array(
-#         [name_similarity, iban_similarity, phone_similarity]
-#     )
-#     weights = np.array([0.4, 0.3, 0.3])
-
-#     # Adjust weights based on available features
-#     available = ~np.isnan(similarities)
-#     similarities = similarities[available]
-#     weights = weights[available]
-#     weights /= weights.sum()
-
-#     overall_similarity = np.dot(similarities, weights)
-#     return overall_similarity
-
 def compute_similarity(row1, row2):
     # Initialize similarity score
     similarity_score = 0.0
@@ -73,34 +35,36 @@ def compute_similarity(row1, row2):
 
     # Define weights for each feature
     weights = {
-        'is_company': 2.0,
-        'parsed_name': 3.0,
-        'name_phonetic': 2.0,
-        'surname': 3.0,
-        'surname_phonetic': 2.0,
-        'given_name': 1.0,
-        'surname_length': 0.5,
-        'party_iban': 5.0,
-        'party_phone': 1.0
+        "is_company": 2.0,
+        "parsed_name": 3.0,
+        "name_phonetic": 2.0,
+        "surname": 3.0,
+        "surname_phonetic": 2.0,
+        "given_name": 1.0,
+        "surname_length": 0.5,
+        "party_iban": 5.0,
+        "party_phone": 1.0,
     }
 
     # 1. Compare 'is_company'
-    if not pd.isnull(row1['is_company']) and not pd.isnull(row2['is_company']):
-        if row1['is_company'] == row2['is_company']:
-            similarity_score += weights['is_company']
-        total_weight += weights['is_company']
+    if not pd.isnull(row1["is_company"]) and not pd.isnull(row2["is_company"]):
+        if row1["is_company"] == row2["is_company"]:
+            similarity_score += weights["is_company"]
+        total_weight += weights["is_company"]
 
     # 2. Compare 'parsed_name' using Jaro-Winkler similarity
-    if not pd.isnull(row1['parsed_name']) and not pd.isnull(row2['parsed_name']):
-        name_similarity = jellyfish.jaro_winkler_similarity(row1['parsed_name'], row2['parsed_name'])
-        similarity_score += name_similarity * weights['parsed_name']
-        total_weight += weights['parsed_name']
+    if not pd.isnull(row1["parsed_name"]) and not pd.isnull(row2["parsed_name"]):
+        name_similarity = jellyfish.jaro_winkler_similarity(
+            row1["parsed_name"], row2["parsed_name"]
+        )
+        similarity_score += name_similarity * weights["parsed_name"]
+        total_weight += weights["parsed_name"]
 
     # 3. Compare name phonetic encodings
     phonetic_matches = 0
     phonetic_total = 0
 
-    for encoding in ['name_soundex', 'name_metaphone', 'name_nysiis']:
+    for encoding in ["name_soundex", "name_metaphone", "name_nysiis"]:
         if encoding in row1 and encoding in row2:
             if not pd.isnull(row1[encoding]) and not pd.isnull(row2[encoding]):
                 phonetic_total += 1
@@ -108,21 +72,23 @@ def compute_similarity(row1, row2):
                     phonetic_matches += 1
 
     if phonetic_total > 0:
-        phonetic_similarity = (phonetic_matches / phonetic_total)
-        similarity_score += phonetic_similarity * weights['name_phonetic']
-        total_weight += weights['name_phonetic']
+        phonetic_similarity = phonetic_matches / phonetic_total
+        similarity_score += phonetic_similarity * weights["name_phonetic"]
+        total_weight += weights["name_phonetic"]
 
     # 4. Compare 'surname' using Jaro-Winkler similarity
-    if not pd.isnull(row1['surname']) and not pd.isnull(row2['surname']):
-        surname_similarity = jellyfish.jaro_winkler_similarity(row1['surname'], row2['surname'])
-        similarity_score += surname_similarity * weights['surname']
-        total_weight += weights['surname']
+    if not pd.isnull(row1["surname"]) and not pd.isnull(row2["surname"]):
+        surname_similarity = jellyfish.jaro_winkler_similarity(
+            row1["surname"], row2["surname"]
+        )
+        similarity_score += surname_similarity * weights["surname"]
+        total_weight += weights["surname"]
 
     # 5. Compare surname phonetic encodings
     surname_phonetic_matches = 0
     surname_phonetic_total = 0
 
-    for encoding in ['surname_soundex', 'surname_metaphone', 'surname_nysiis']:
+    for encoding in ["surname_soundex", "surname_metaphone", "surname_nysiis"]:
         if encoding in row1 and encoding in row2:
             if not pd.isnull(row1[encoding]) and not pd.isnull(row2[encoding]):
                 surname_phonetic_total += 1
@@ -130,38 +96,42 @@ def compute_similarity(row1, row2):
                     surname_phonetic_matches += 1
 
     if surname_phonetic_total > 0:
-        surname_phonetic_similarity = (surname_phonetic_matches / surname_phonetic_total)
-        similarity_score += surname_phonetic_similarity * weights['surname_phonetic']
-        total_weight += weights['surname_phonetic']
+        surname_phonetic_similarity = surname_phonetic_matches / surname_phonetic_total
+        similarity_score += surname_phonetic_similarity * weights["surname_phonetic"]
+        total_weight += weights["surname_phonetic"]
 
     # 6. Compare 'given_name' using Jaro-Winkler similarity
-    if not pd.isnull(row1['given_name']) and not pd.isnull(row2['given_name']):
-        given_name_similarity = jellyfish.jaro_winkler_similarity(row1['given_name'], row2['given_name'])
-        similarity_score += given_name_similarity * weights['given_name']
-        total_weight += weights['given_name']
+    if not pd.isnull(row1["given_name"]) and not pd.isnull(row2["given_name"]):
+        given_name_similarity = jellyfish.jaro_winkler_similarity(
+            row1["given_name"], row2["given_name"]
+        )
+        similarity_score += given_name_similarity * weights["given_name"]
+        total_weight += weights["given_name"]
 
     # 7. Compare 'surname_length'
-    if not pd.isnull(row1['surname_length']) and not pd.isnull(row2['surname_length']):
-        length_difference = abs(row1['surname_length'] - row2['surname_length'])
-        max_length = max(row1['surname_length'], row2['surname_length'])
+    if not pd.isnull(row1["surname_length"]) and not pd.isnull(row2["surname_length"]):
+        length_difference = abs(row1["surname_length"] - row2["surname_length"])
+        max_length = max(row1["surname_length"], row2["surname_length"])
         if max_length > 0:
             length_similarity = 1 - (length_difference / max_length)
-            similarity_score += length_similarity * weights['surname_length']
-            total_weight += weights['surname_length']
+            similarity_score += length_similarity * weights["surname_length"]
+            total_weight += weights["surname_length"]
 
     # 8. Compare 'party_iban' if available
-    if 'party_iban' in row1 and 'party_iban' in row2:
-        if not pd.isnull(row1['party_iban']) and not pd.isnull(row2['party_iban']):
-            if row1['party_iban'] == row2['party_iban']:
-                similarity_score += weights['party_iban']
-            total_weight += weights['party_iban']
+    if "party_iban" in row1 and "party_iban" in row2:
+        if not pd.isnull(row1["party_iban"]) and not pd.isnull(row2["party_iban"]):
+            if row1["party_iban"] == row2["party_iban"]:
+                similarity_score += weights["party_iban"]
+            total_weight += weights["party_iban"]
 
     # 9. Compare 'party_phone' if available
-    if 'party_phone' in row1 and 'party_phone' in row2:
-        if not pd.isnull(row1['party_phone']) and not pd.isnull(row2['party_phone']):
-            phone_similarity = jellyfish.jaro_winkler_similarity(row1['party_phone'], row2['party_phone'])
-            similarity_score += phone_similarity * weights['party_phone']
-            total_weight += weights['party_phone']
+    if "party_phone" in row1 and "party_phone" in row2:
+        if not pd.isnull(row1["party_phone"]) and not pd.isnull(row2["party_phone"]):
+            phone_similarity = jellyfish.jaro_winkler_similarity(
+                row1["party_phone"], row2["party_phone"]
+            )
+            similarity_score += phone_similarity * weights["party_phone"]
+            total_weight += weights["party_phone"]
 
     # Handle case where total_weight is zero to avoid division by zero
     if total_weight == 0:
@@ -171,6 +141,7 @@ def compute_similarity(row1, row2):
     final_similarity = (similarity_score / total_weight) * 100
 
     return final_similarity
+
 
 def create_composite_key(record_id, name_lsh, name_minhashes, df):
     # Get MinHash signature bucket for name

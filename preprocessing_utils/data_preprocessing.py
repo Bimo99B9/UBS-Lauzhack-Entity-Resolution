@@ -1,5 +1,5 @@
 import pandas as pd
-from normalize_text import clean_text_dataset, remove_words, normalize_phone
+from preprocessing_utils.normalize_text import clean_text_dataset, remove_words, normalize_phone
 
 
 def data_preprocessing(
