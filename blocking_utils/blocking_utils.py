@@ -1,29 +1,61 @@
 import jellyfish
-from datasketch import MinHash
+from datasketch import MinHash, MinHashLSH
 import pandas as pd
-from simhash import Simhash
+from nltk.util import ngrams
 
-def get_minhash(text, num_perm=128, ngram_size=3):
-    if not text or len(text) < ngram_size:
-        return MinHash(num_perm=num_perm)
+def create_ngram_lsh(df, colname, n=3, threshold=0.5, num_perm=128):
+    # removes spaces and creates ngrams
+    # Initialize LSH
+    ngram_lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
+    ngram_minhashes = {}
 
-    word_tokens = set(text.split())
+    def text_to_ngrams(text, n):
+        # Convert text to character n-grams
+        text = text.lower().replace(' ', '')
+        return set(''.join(ng) for ng in ngrams(text, n))
 
-    char_tokens = set(
-        text[i : i + ngram_size] for i in range(len(text) - ngram_size + 1)
-    )
+    # Create MinHash for each address using n-grams
+    for idx, row in df.iterrows():
+        col = row[colname]
+        record_id = row['record_id']
+        
+        # Generate n-grams
+        col_ngrams = text_to_ngrams(col, n)
+        
+        # Create MinHash from n-grams
+        m = MinHash(num_perm=num_perm)
+        for ngram in col_ngrams:
+            m.update(ngram.encode('utf8'))
+            
+        ngram_minhashes[record_id] = m
+        ngram_lsh.insert(record_id, m)
 
-    all_tokens = word_tokens.union(char_tokens)
-    m = MinHash(num_perm=num_perm)  # default seed=1
-    for token in all_tokens:
-        m.update(token.encode("utf8"))
-    return m
+    return ngram_lsh, ngram_minhashes
 
+def create_ngram_words_lsh(df, colname, n=3, threshold=0.5, num_perm=128):
+    # splits by words then does ngrams on words
+    def get_minhash(text, num_perm=128, ngram_size=3):
+        if not text or len(text) < ngram_size:
+            return MinHash(num_perm=num_perm)
+        word_tokens = set(text.split())
+        char_tokens = set(
+            text[i : i + ngram_size] for i in range(len(text) - ngram_size + 1)
+        )
 
-# TODO: This is not used
-def get_simhash(text):
-    return Simhash(text)
+        all_tokens = word_tokens.union(char_tokens)
+        m = MinHash(num_perm=num_perm)  # default seed=1
+        for token in all_tokens:
+            m.update(token.encode("utf8"))
+        return m
 
+    name_lsh = MinHashLSH(threshold=0.25, num_perm=128)
+    name_minhashes = {}
+    for idx, row in df.iterrows():
+        record_id = row["record_id"]
+        name = row[colname]
+        minhash = get_minhash(name)
+        name_minhashes[record_id] = minhash
+        name_lsh.insert(record_id, minhash)
 
 def compute_similarity(row1, row2):
     # Initialize similarity score
