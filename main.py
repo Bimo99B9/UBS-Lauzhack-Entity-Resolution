@@ -1,8 +1,7 @@
 import pandas as pd
-from datasketch import MinHashLSH
 from itertools import combinations
 from collections import defaultdict
-from blocking_utils.blocking_utils import get_minhash, compute_similarity
+from blocking_utils.blocking_utils import compute_similarity, create_ngram_lsh
 
 
 def main():
@@ -10,14 +9,7 @@ def main():
     df["record_id"] = df.index
 
     # MinHash for name similarity
-    name_lsh = MinHashLSH(threshold=0.25, num_perm=128)
-    name_minhashes = {}
-    for idx, row in df.iterrows():
-        record_id = row["record_id"]
-        name = row["parsed_name"]
-        minhash = get_minhash(name)
-        name_minhashes[record_id] = minhash
-        name_lsh.insert(record_id, minhash)
+    name_lsh, name_minhashes = create_ngram_lsh(df, 'parsed_name', n=2, threshold=0.25, num_perm=128)
 
     def evaluate_lsh_groups(df, name_lsh, name_minhashes):
         # Get LSH groups
@@ -136,7 +128,7 @@ def main():
     # Use after creating LSH:
     record_memberships = analyze_record_block_membership(name_lsh, name_minhashes)
 
-    # df["address_simhash"] = df["full_address"].apply(get_simhash)
+    # df["`address_simhash`"] = df["full_address"].apply(get_simhash)
 
     ################ PAIRING STRATEGY ################
 
@@ -252,14 +244,13 @@ def main():
     print(f"F1-Score: {f1_score:.2f}")
 
     """
-    # jaccard distance, cosine or distance metrics that take into account missing dimensions, GPS
+    # jaccard sim, cosine or distance metrics that take into account missing dimensions, GPS
     1.	MinHash for Jaccard Similarity:
         •	Use Case: Suitable for sets or binary vectors (e.g., name tokens, address tokens).
         •	Implementation:
         •	Represent names and addresses as sets of tokens or n-grams.
         •	Apply MinHash to generate hash signatures.
         •	Use multiple hash functions to create a composite signature.
-
     2.	SimHash for Cosine Similarity:
         •	Use Case: Works well with high-dimensional vectors from textual data.
         •	Implementation:
