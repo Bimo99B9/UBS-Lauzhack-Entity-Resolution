@@ -143,8 +143,6 @@ def main():
     # Create a mapping from composite keys to record IDs
     composite_key_to_records = defaultdict(set)
     
-    # Just use the minhash for now
-   
     for record_id in df["record_id"]:
         for col in cols:
             if record_id in minhash_dict[col]:

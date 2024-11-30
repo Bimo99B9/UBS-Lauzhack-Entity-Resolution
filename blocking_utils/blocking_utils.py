@@ -175,16 +175,3 @@ def compute_similarity(row1, row2):
 
     return final_similarity
 
-
-def create_composite_key(record_id, name_lsh, name_minhashes, df):
-    # Get MinHash signature bucket for name
-    name_buckets = name_lsh.query(name_minhashes[record_id])
-    name_bucket = frozenset(name_buckets)
-
-    # Get SimHash value for address
-    address_simhash = df.loc[df["record_id"] == record_id, "address_simhash"].values[0]
-    address_hash = address_simhash.value
-
-    # Combine name bucket and address hash to create composite key
-    composite_key = (name_bucket, address_hash)
-    return composite_key
