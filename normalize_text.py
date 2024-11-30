@@ -30,7 +30,7 @@ def clean_text(text: str, name: bool) -> str:
     return text
 
 
-def clean_text_df(df: pd.DataFrame, col_name: str, name: bool) -> pd.DataFrame:
+def clean_text_dataset(df: pd.DataFrame, col_name: str, name: bool) -> pd.DataFrame:
     df[col_name] = df[col_name].apply(
         lambda x: clean_text(x, name) if pd.notna(x) else x
     )
@@ -55,9 +55,9 @@ if __name__ == "__main__":
     df = pd.read_csv("data/external_parties_train.csv")
 
     # Clean names
-    df = clean_text_df(df, "parsed_name", name=True)
+    df = clean_text_dataset(df, "parsed_name", name=True)
     # Clean addresses
-    df = clean_text_df(df, "parsed_address_street_name", name=False)
+    df = clean_text_dataset(df, "parsed_address_street_name", name=False)
 
     # Define common words to remove
     remove = [
