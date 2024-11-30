@@ -252,12 +252,14 @@ def init_worker(dataframe):
 def main():
     global df
     start_total = time.time()
-    df = pd.read_csv("data/processed/external_parties_train.csv")
+    df = pd.read_csv("data/processed/external_parties_minitest.csv")
     cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city"]
     thres = [0.25, 0.8, 0.8]
     ngram = [2, 3, 3]
     num_perm = 128  # Increased from 32 to 128 to match blocking_utils.default
-    num_processes = mp.cpu_count()
+    # num_processes = mp.cpu_count()
+    num_processes = 16
+    print(f"Number of processes: {num_processes}")
 
     logger.info("Initializing record IDs...")
     df["record_id"] = df.index
@@ -275,9 +277,9 @@ def main():
         minhash_dict[col] = minhash
 
     # Evaluate LSH groups
-    for col in cols:
-        metrics = evaluate_lsh_groups(df, lsh_dict[col], minhash_dict[col])
-        logger.info(f"{col}: {metrics}")
+    # for col in cols:
+    #     metrics = evaluate_lsh_groups(df, lsh_dict[col], minhash_dict[col])
+    #     logger.info(f"{col}: {metrics}")
 
     ################ PAIRING STRATEGY ################
     logger.info("Starting pairing strategy...")
@@ -380,108 +382,14 @@ def main():
         clusters[cluster_id].add(record_id)
 
     # Create predicted_external_id column
-    df["predicted_external_id"] = df["record_id"].apply(lambda x: find(x))
+    df["external_id"] = df["record_id"].apply(lambda x: find(x))
+    
+    # Save with only "transaction_reference_id" and "external_id" columns
+    df[["transaction_reference_id", "external_id"]].to_csv("submission.csv", index=False)
+    
     logger.info(
         f"Clustering completed in {time.time() - start_union_find:.2f} seconds."
     )
-
-    ################ EVALUATION ################
-    logger.info("Starting evaluation of clusters...")
-    start_evaluation = time.time()
-
-    # Ground truth clusters based on 'external_id'
-    ground_truth = df.groupby("external_id")["record_id"].apply(set).to_dict()
-
-    # Get true pairs and predicted pairs
-    true_pairs = get_all_pairs(ground_truth)
-    predicted_pairs = get_all_pairs(clusters)
-
-    # Compute True Positives (TP), False Positives (FP), and False Negatives (FN)
-    TP = len(true_pairs.intersection(predicted_pairs))
-    FP = len(predicted_pairs.difference(true_pairs))
-    FN = len(true_pairs.difference(predicted_pairs))
-
-    # Precision, Recall, F1-Score
-    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
-    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
-    f1_score = (
-        2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-    )
-
-    logger.info(f"Precision: {precision:.4f}")
-    logger.info(f"Recall: {recall:.4f}")
-    logger.info(f"F1-Score: {f1_score:.4f}")
-    logger.info(
-        f"Evaluation completed in {time.time() - start_evaluation:.2f} seconds."
-    )
-
-    ################ ANALYZE MISSED PAIRS ################
-    logger.info("Analyzing missed pairs (False Negatives)...")
-    start_missed = time.time()
-
-    # Identify False Negative pairs (missed pairs)
-    fn_pairs = true_pairs.difference(predicted_pairs)
-
-    missed_pairs_info = []
-
-    for pair in fn_pairs:
-        record_id1, record_id2 = pair
-        try:
-            record1 = df.loc[df["record_id"] == record_id1].iloc[0]
-            record2 = df.loc[df["record_id"] == record_id2].iloc[0]
-        except IndexError:
-            logger.error(f"Record ID not found for pair: {pair}")
-            continue
-
-        # Check if the pair was a candidate pair
-        if pair in candidate_pairs or (pair[::-1] in candidate_pairs):
-            # They were compared but similarity score was below threshold
-            sim_score = candidate_pairs_similarity.get(
-                pair
-            ) or candidate_pairs_similarity.get(pair[::-1])
-            reason = (
-                f"Low similarity score ({sim_score:.4f})"
-                if sim_score is not None
-                else "Low similarity score"
-            )
-        else:
-            # They were not compared; likely in different blocks
-            sim_score = None
-            reason = "Different blocks (not compared)"
-
-        # Collect information for exporting
-        missed_pairs_info.append(
-            {
-                "record_id_1": record_id1,
-                "parsed_name_1": record1["parsed_name"],
-                "external_id_1": record1["external_id"],
-                "record_id_2": record_id2,
-                "parsed_name_2": record2["parsed_name"],
-                "external_id_2": record2["external_id"],
-                "similarity_score": sim_score,
-                "reason": reason,
-            }
-        )
-
-    # Create a DataFrame from the missed pairs information
-    missed_pairs_df = pd.DataFrame(missed_pairs_info)
-
-    # Save to CSV file
-    missed_pairs_df.to_csv("missed_pairs_analysis.csv", index=False)
-
-    logger.info(f"Number of missed pairs: {len(missed_pairs_df)}")
-    logger.info(
-        "Missed pairs with explanations have been saved to 'missed_pairs_analysis.csv'"
-    )
-    logger.info(
-        f"Missed pairs analysis completed in {time.time() - start_missed:.2f} seconds."
-    )
-
-    ################ OPTIONAL: ANALYSIS ################
-    logger.info("Analyzing reasons for missing pairs...")
-    reasons_counts = missed_pairs_df["reason"].value_counts()
-    # logger.info("\nReasons for missing pairs:")
-    # logger.info(reasons_counts.to_string())
 
     logger.info(f"Total script completed in {time.time() - start_total:.2f} seconds.")
 
