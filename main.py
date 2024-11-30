@@ -162,7 +162,7 @@ def main():
     similarity_threshold = 0.6
 
     # Lists to store matched pairs and their similarity scores
-    matched_pairs = []
+    matched_pairs = set()
     unmatched_candidate_pairs = []
 
     for pair in candidate_pairs:
@@ -172,7 +172,7 @@ def main():
         # Store the similarity score for the candidate pair
         candidate_pairs_similarity[pair] = sim_score
         if sim_score >= similarity_threshold:
-            matched_pairs.append(pair)
+            matched_pairs.add(pair)
         else:
             unmatched_candidate_pairs.append(pair)
     
