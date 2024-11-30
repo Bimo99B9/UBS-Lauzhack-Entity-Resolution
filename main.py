@@ -4,7 +4,7 @@ from collections import defaultdict
 from blocking_utils.blocking_utils import compute_similarity, create_ngram_lsh
 
 
-def analyze_record_block_membership(name_lsh, name_minhashes):
+def analyze_record_block_membership(df, name_lsh, name_minhashes):
     # Track which blocks each record appears in
     record_to_blocks = {}
 
