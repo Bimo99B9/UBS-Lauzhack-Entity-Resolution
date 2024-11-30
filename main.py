@@ -4,74 +4,97 @@ from collections import defaultdict
 from blocking_utils.blocking_utils import compute_similarity, create_ngram_lsh
 
 
-def main():
-    df = pd.read_csv("data/processed/external_parties_train.csv")
-    df["record_id"] = df.index
+def analyze_record_block_membership(name_lsh, name_minhashes):
+    # Track which blocks each record appears in
+    record_to_blocks = {}
 
-    # MinHash for name similarity
-    name_lsh, name_minhashes = create_ngram_lsh(df, 'parsed_name', n=2, threshold=0.25, num_perm=128)
+    for record_id, minhash in name_minhashes.items():
+        neighbors = name_lsh.query(minhash)
+        # Convert each group to frozenset for hashability
+        blocks = frozenset(neighbors)
+        record_to_blocks[record_id] = blocks
 
-    def evaluate_lsh_groups(df, name_lsh, name_minhashes):
-        # Get LSH groups
-        lsh_groups = {}
-        for idx, row in df.iterrows():
-            record_id = row["record_id"]
-            neighbors = name_lsh.query(name_minhashes[record_id])
-            # Sort to ensure consistent group identification
-            sorted_neighbors = tuple(sorted(neighbors))
-            lsh_groups[record_id] = sorted_neighbors
+    # Analyze membership
+    membership_counts = [len(blocks) for blocks in record_to_blocks.values()]
 
-        # Evaluate against true external_ids
-        correct_pairs = 0
-        total_predicted_pairs = 0
-        total_actual_pairs = 0
+    print(
+        f"Records appearing in multiple blocks: {sum(1 for x in membership_counts if x > 1)}"
+    )
+    print(
+        f"Average blocks per record: {sum(membership_counts)/len(membership_counts):.2f}"
+    )
+    print(f"Max blocks per record: {max(membership_counts)}")
 
-        # Count actual pairs
-        external_id_groups = df.groupby("external_id").record_id.agg(list).to_dict()
-        for group in external_id_groups.values():
-            total_actual_pairs += len(group) * (len(group) - 1) // 2
+    # Show example of a record in multiple blocks
+    for record_id, blocks in record_to_blocks.items():
+        if len(blocks) > 1:
+            print(
+                f"\nExample - Record {record_id} appears in {len(blocks)} blocks:"
+            )
+            print(f"Name: {df.loc[record_id, 'parsed_name']}")
+            break
 
-        # Count correct and predicted pairs
-        for record_id, group in lsh_groups.items():
-            group_size = len(group)
-            total_predicted_pairs += group_size * (group_size - 1) // 2
+    return record_to_blocks
 
-            # Get actual external_id for this record
-            true_external_id = df.loc[record_id, "external_id"]
+def evaluate_lsh_groups(df, name_lsh, name_minhashes):
+    # Get LSH groups
+    lsh_groups = {}
+    for idx, row in df.iterrows():
+        if row["record_id"] not in name_minhashes:
+            continue
+        record_id = row["record_id"]
+        neighbors = name_lsh.query(name_minhashes[record_id])
+        # Sort to ensure consistent group identification
+        sorted_neighbors = tuple(sorted(neighbors))
+        lsh_groups[record_id] = sorted_neighbors
 
-            # Count correct pairs in this group
-            for other_id in group:
-                if other_id != record_id:
-                    other_external_id = df.loc[other_id, "external_id"]
-                    if true_external_id == other_external_id:
-                        correct_pairs += 1
+    # Evaluate against true external_ids
+    correct_pairs = 0
+    total_predicted_pairs = 0
+    total_actual_pairs = 0
 
-        correct_pairs = correct_pairs // 2  # Each pair was counted twice
+    # Count actual pairs
+    external_id_groups = df.groupby("external_id").record_id.agg(list).to_dict()
+    for group in external_id_groups.values():
+        total_actual_pairs += len(group) * (len(group) - 1) // 2
 
-        precision = (
-            correct_pairs / total_predicted_pairs if total_predicted_pairs > 0 else 0
-        )
-        recall = correct_pairs / total_actual_pairs if total_actual_pairs > 0 else 0
-        f1 = (
-            2 * (precision * recall) / (precision + recall)
-            if (precision + recall) > 0
-            else 0
-        )
+    # Count correct and predicted pairs
+    for record_id, group in lsh_groups.items():
+        group_size = len(group)
+        total_predicted_pairs += group_size * (group_size - 1) // 2
 
-        return {
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
-            "correct_pairs": correct_pairs,
-            "predicted_pairs": total_predicted_pairs,
-            "actual_pairs": total_actual_pairs,
-        }
+        # Get actual external_id for this record
+        true_external_id = df.loc[record_id, "external_id"]
 
-    # Use it like this:
-    metrics = evaluate_lsh_groups(df, name_lsh, name_minhashes)
-    print(metrics)
+        # Count correct pairs in this group
+        for other_id in group:
+            if other_id != record_id:
+                other_external_id = df.loc[other_id, "external_id"]
+                if true_external_id == other_external_id:
+                    correct_pairs += 1
 
-    def count_lsh_blocks(name_lsh, name_minhashes):
+    correct_pairs = correct_pairs // 2  # Each pair was counted twice
+
+    precision = (
+        correct_pairs / total_predicted_pairs if total_predicted_pairs > 0 else 0
+    )
+    recall = correct_pairs / total_actual_pairs if total_actual_pairs > 0 else 0
+    f1 = (
+        2 * (precision * recall) / (precision + recall)
+        if (precision + recall) > 0
+        else 0
+    )
+
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "correct_pairs": correct_pairs,
+        "predicted_pairs": total_predicted_pairs,
+        "actual_pairs": total_actual_pairs,
+    }
+        
+def count_lsh_blocks(name_lsh, name_minhashes):
         # Get all unique groups
         blocks = set()
         for record_id, minhash in name_minhashes.items():
@@ -89,58 +112,40 @@ def main():
         print(f"Blocks of size 1: {sum(1 for x in block_sizes if x == 1)}")
 
         return blocks
-
-    # Use after creating LSH:
-    blocks = count_lsh_blocks(name_lsh, name_minhashes)
-
-    def analyze_record_block_membership(name_lsh, name_minhashes):
-        # Track which blocks each record appears in
-        record_to_blocks = {}
-
-        for record_id, minhash in name_minhashes.items():
-            neighbors = name_lsh.query(minhash)
-            # Convert each group to frozenset for hashability
-            blocks = frozenset(neighbors)
-            record_to_blocks[record_id] = blocks
-
-        # Analyze membership
-        membership_counts = [len(blocks) for blocks in record_to_blocks.values()]
-
-        print(
-            f"Records appearing in multiple blocks: {sum(1 for x in membership_counts if x > 1)}"
-        )
-        print(
-            f"Average blocks per record: {sum(membership_counts)/len(membership_counts):.2f}"
-        )
-        print(f"Max blocks per record: {max(membership_counts)}")
-
-        # Show example of a record in multiple blocks
-        for record_id, blocks in record_to_blocks.items():
-            if len(blocks) > 1:
-                print(
-                    f"\nExample - Record {record_id} appears in {len(blocks)} blocks:"
-                )
-                print(f"Name: {df.loc[record_id, 'parsed_name']}")
-                break
-
-        return record_to_blocks
-
-    # Use after creating LSH:
-    record_memberships = analyze_record_block_membership(name_lsh, name_minhashes)
-
-    # df["`address_simhash`"] = df["full_address"].apply(get_simhash)
-
+    
+def get_all_pairs(cluster_dict):
+        pairs = set()
+        for records in cluster_dict.values():
+            records = list(records)
+            if len(records) > 1:
+                for pair in combinations(records, 2):
+                    pairs.add(tuple(sorted(pair)))
+        return pairs
+    
+def main(df, cols = ['parsed_name', 'parsed_address_street_name'],
+                               thres =[0.25, 0.25], ngram = [2, 2], num_perm = 128):
+    df["record_id"] = df.index
+    lsh_dict, minhash_dict = {}, {}
+    for i, col in enumerate(cols):
+        lsh, minhash = create_ngram_lsh(df, col, n=ngram[i], threshold=thres[i], num_perm=num_perm)
+        metrics = evaluate_lsh_groups(df, lsh, minhash)
+        lsh_dict[col] = lsh
+        minhash_dict[col] = minhash
+        print(f'{col}:', metrics)
+        
     ################ PAIRING STRATEGY ################
 
     # Create a mapping from composite keys to record IDs
     composite_key_to_records = defaultdict(set)
-
+    
     # Just use the minhash for now
+   
     for record_id in df["record_id"]:
-        minhash = name_minhashes[record_id]
-        key = frozenset(name_lsh.query(minhash))
-        composite_key_to_records[key].add(record_id)
-
+        for col in cols:
+            if record_id in minhash_dict[col]:
+                minhash = minhash_dict[col][record_id]
+                key = frozenset(lsh_dict[col].query(minhash))
+                composite_key_to_records[key].add(record_id)
     # Generate candidate pairs within each composite bucket
     candidate_pairs = set()
     candidate_pairs_similarity = {}
@@ -151,7 +156,7 @@ def main():
                 candidate_pairs.add(tuple(sorted(pair)))
 
     # Set a similarity threshold
-    similarity_threshold = 0.4
+    similarity_threshold = 0.6
 
     # Lists to store matched pairs and their similarity scores
     matched_pairs = []
@@ -167,7 +172,7 @@ def main():
             matched_pairs.append(pair)
         else:
             unmatched_candidate_pairs.append(pair)
-
+    
     ###############################################
 
     # Union-Find implementation
@@ -205,17 +210,6 @@ def main():
         external_id = row["external_id"]
         record_id = row["record_id"]
         ground_truth[external_id].add(record_id)
-
-    # Predicted clusters are stored in 'clusters'
-
-    def get_all_pairs(cluster_dict):
-        pairs = set()
-        for records in cluster_dict.values():
-            records = list(records)
-            if len(records) > 1:
-                for pair in combinations(records, 2):
-                    pairs.add(tuple(sorted(pair)))
-        return pairs
 
     # Get true pairs and predicted pairs
     true_pairs = get_all_pairs(ground_truth)
@@ -319,6 +313,8 @@ def main():
         •	Apply LSH to n-gram frequency vectors.
     """
 
-
+        
 if __name__ == "__main__":
-    main()
+    df = pd.read_csv("data/processed/external_parties_train.csv")
+    main(df, cols = ['parsed_name', 'parsed_address_street_name'], thres=[0.25, 0.8], ngram=[4, 3], num_perm=128)
+    # main()
