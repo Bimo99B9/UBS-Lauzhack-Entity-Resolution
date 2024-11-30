@@ -208,11 +208,19 @@ def main():
 
     ################ PAIRING STRATEGY ################
 
-    # Create a mapping from composite keys to record IDs
+    # Create a mapping from composite keys to record IDs:
+    # composite_key = (minhash_bucket, simhash_value)
+    # This might be too strict, consider finding neighbors over different LSHashes independently
     composite_key_to_records = defaultdict(set)
 
+    # for record_id in df['record_id']:
+    #     key = create_composite_key(record_id, name_lsh, name_minhashes, df)
+    #     composite_key_to_records[key].add(record_id)
+
+    # Just use the minhash for now
     for record_id in df['record_id']:
-        key = create_composite_key(record_id, name_lsh, name_minhashes, df)
+        minhash = name_minhashes[record_id]
+        key = frozenset(name_lsh.query(minhash))
         composite_key_to_records[key].add(record_id)
 
     # Generate candidate pairs within each composite bucket
@@ -269,6 +277,39 @@ def main():
 
     ################ EVALUATION ################
 
+    # Ground truth clusters based on 'external_id'
+    ground_truth = defaultdict(set)
+    for idx, row in df.iterrows():
+        external_id = row['external_id']
+        record_id = row['record_id']
+        ground_truth[external_id].add(record_id)
+
+    # Predicted clusters are stored in 'clusters'
+    def get_all_pairs(cluster_dict):
+        pairs = set()
+        for records in cluster_dict.values():
+            if len(records) > 1:
+                for pair in combinations(records, 2):
+                    pairs.add(tuple(sorted(pair)))
+        return pairs
+
+    # Get true pairs and predicted pairs
+    true_pairs = get_all_pairs(ground_truth)
+    predicted_pairs = get_all_pairs(clusters)
+
+    # Compute True Positives (TP), False Positives (FP), and False Negatives (FN)
+    TP = len(true_pairs.intersection(predicted_pairs)) # (A, B) match and we predicted (A, B)
+    FP = len(predicted_pairs.difference(true_pairs)) # (A, C) dont match but we predicted (A, C)
+    FN = len(true_pairs.difference(predicted_pairs)) # (A, B) match but we did not predict (A, B)
+
+    # Precision, Recall, F1-Score
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+    f1_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+
+    print(f'Precision: {precision:.2f}')
+    print(f'Recall: {recall:.2f}')
+    print(f'F1-Score: {f1_score:.2f}')
 
     """
     # jaccard distance, cosine or distance metrics that take into account missing dimensions, GPS
