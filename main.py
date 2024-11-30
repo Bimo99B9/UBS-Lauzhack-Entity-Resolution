@@ -83,9 +83,6 @@ def compute_similarity(row1, row2):
         'party_iban': 5.0,
         'party_phone': 1.0
     }
-    
-    print(f"Row1: {row1}")
-    print(f"Row2: {row2}")
 
     # 1. Compare 'is_company'
     if not pd.isnull(row1['is_company']) and not pd.isnull(row2['is_company']):
@@ -95,7 +92,7 @@ def compute_similarity(row1, row2):
 
     # 2. Compare 'parsed_name' using Jaro-Winkler similarity
     if not pd.isnull(row1['parsed_name']) and not pd.isnull(row2['parsed_name']):
-        name_similarity = jellyfish.jaro_winkler(row1['parsed_name'], row2['parsed_name'])
+        name_similarity = jellyfish.jaro_winkler_similarity(row1['parsed_name'], row2['parsed_name'])
         similarity_score += name_similarity * weights['parsed_name']
         total_weight += weights['parsed_name']
 
@@ -117,7 +114,7 @@ def compute_similarity(row1, row2):
 
     # 4. Compare 'surname' using Jaro-Winkler similarity
     if not pd.isnull(row1['surname']) and not pd.isnull(row2['surname']):
-        surname_similarity = jellyfish.jaro_winkler(row1['surname'], row2['surname'])
+        surname_similarity = jellyfish.jaro_winkler_similarity(row1['surname'], row2['surname'])
         similarity_score += surname_similarity * weights['surname']
         total_weight += weights['surname']
 
@@ -139,7 +136,7 @@ def compute_similarity(row1, row2):
 
     # 6. Compare 'given_name' using Jaro-Winkler similarity
     if not pd.isnull(row1['given_name']) and not pd.isnull(row2['given_name']):
-        given_name_similarity = jellyfish.jaro_winkler(row1['given_name'], row2['given_name'])
+        given_name_similarity = jellyfish.jaro_winkler_similarity(row1['given_name'], row2['given_name'])
         similarity_score += given_name_similarity * weights['given_name']
         total_weight += weights['given_name']
 
@@ -162,7 +159,7 @@ def compute_similarity(row1, row2):
     # 9. Compare 'party_phone' if available
     if 'party_phone' in row1 and 'party_phone' in row2:
         if not pd.isnull(row1['party_phone']) and not pd.isnull(row2['party_phone']):
-            phone_similarity = jellyfish.jaro_winkler(row1['party_phone'], row2['party_phone'])
+            phone_similarity = jellyfish.jaro_winkler_similarity(row1['party_phone'], row2['party_phone'])
             similarity_score += phone_similarity * weights['party_phone']
             total_weight += weights['party_phone']
 
