@@ -19,6 +19,10 @@ def create_ngram_lsh(df, colname, n=3, threshold=0.5, num_perm=128):
         col = row[colname]
         record_id = row['record_id']
         
+        # Skip rows with missing values in the specified column
+        if pd.isnull(col):
+            continue
+        
         # Generate n-grams
         col_ngrams = text_to_ngrams(col, n)
         
@@ -167,7 +171,7 @@ def compute_similarity(row1, row2):
         return 0.0
 
     # Calculate final similarity score as a percentage
-    final_similarity = (similarity_score / total_weight) * 100
+    final_similarity = (similarity_score / total_weight)
 
     return final_similarity
 

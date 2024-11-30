@@ -122,16 +122,21 @@ def get_all_pairs(cluster_dict):
                     pairs.add(tuple(sorted(pair)))
         return pairs
     
-def main(df, cols = ['parsed_name', 'parsed_address_street_name'],
-                               thres =[0.25, 0.25], ngram = [2, 2], num_perm = 128):
+def main():
+    df = pd.read_csv("data/processed/external_parties_train.csv")
+    cols = ['parsed_name', 'parsed_address_street_name', 'parsed_address_city']
+    thres=[0.25, 0.8, 0.8]
+    ngram=[2, 3, 3]
+    num_perm=128
+
     df["record_id"] = df.index
     lsh_dict, minhash_dict = {}, {}
     for i, col in enumerate(cols):
         lsh, minhash = create_ngram_lsh(df, col, n=ngram[i], threshold=thres[i], num_perm=num_perm)
-        metrics = evaluate_lsh_groups(df, lsh, minhash)
         lsh_dict[col] = lsh
         minhash_dict[col] = minhash
-        print(f'{col}:', metrics)
+        # metrics = evaluate_lsh_groups(df, lsh, minhash)
+        # print(f'{col}:', metrics)
         
     ################ PAIRING STRATEGY ################
 
@@ -315,6 +320,4 @@ def main(df, cols = ['parsed_name', 'parsed_address_street_name'],
 
         
 if __name__ == "__main__":
-    df = pd.read_csv("data/processed/external_parties_train.csv")
-    main(df, cols = ['parsed_name', 'parsed_address_street_name', 'parsed_address_city'], thres=[0.25, 0.8, 0.8], ngram=[2, 3, 3], num_perm=128)
-    # main()
+    main()
