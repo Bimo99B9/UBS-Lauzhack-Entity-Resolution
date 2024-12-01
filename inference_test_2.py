@@ -291,36 +291,44 @@ def main():
     global df
     start_total = time.time()
     df = pd.read_csv("data/processed/external_parties_train.csv")
-    # cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city", "name_soundex", "party_info_unstructured"]
-    # thres = [0.4, 0.4, 0.4, 0.4, 0.3]
-    # ngram = [3, 4, 4, 3, 3]
-    # num_perm = 32
+
+    # List of columns, thresholds, and ngram sizes
     cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city"]
-    thres = [0.6, 0.6, 0.6]
+    thres = [0.3, 0.6, 0.6]
     ngram = [2, 3, 3]
     num_perm = 128
-    
     num_processes = 8
+
+    # Add a unique record ID for each row
     logger.info("Initializing record IDs...")
     df["record_id"] = df.index
 
-    lsh_dict = {col: MinHashLSH(threshold=thres[0], num_perm=num_perm) for col in cols}
+    # Initialize LSH dictionaries for all columns
+    lsh_dict = {
+        col: MinHashLSH(threshold=thres[i], num_perm=num_perm) 
+        for i, col in enumerate(cols)
+    }
 
     logger.info("Starting pairing strategy with multithreading...")
     start_pairing = time.time()
 
     composite_key_to_records = defaultdict(set)
 
+    # Process records for each column in parallel
     with ThreadPoolExecutor(max_workers=num_processes) as executor:
-        futures = [
-            executor.submit(process_record, record_id, cols[0], lsh_dict, ngram[0], num_perm)
-            for record_id in tqdm(df["record_id"], desc="Submitting Tasks")
-        ]
+        futures = []
+        for i, col in enumerate(cols):
+            for record_id in df["record_id"]:
+                futures.append(
+                    executor.submit(process_record, record_id, col, lsh_dict, ngram[i], num_perm)
+                )
 
+        # Collect results as they complete
         for future in tqdm(as_completed(futures), total=len(futures), desc="Processing Tasks"):
             key, record_id = future.result()
             if key is not None and record_id is not None:
                 composite_key_to_records[key].add(record_id)
+
 
 
     candidate_pairs = set()
