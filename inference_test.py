@@ -289,9 +289,9 @@ def main():
     start_total = time.time()
     df = pd.read_csv("data/processed/external_parties_test.csv")
     cols = ["parsed_name"]
-    thres = [0.6]
+    thres = [0.8]
     ngram = [4, 4]
-    num_perm = 32
+    num_perm = 64
     num_processes = 6
     logger.info("Initializing record IDs...")
     df["record_id"] = df.index
@@ -318,7 +318,7 @@ def main():
     candidate_pairs_similarity = {}
 
     for records in composite_key_to_records.values():
-        if 20 > len(records) > 1 :
+        if 10 > len(records) > 1 :
             candidate_pairs.update(combinations(sorted(records), 2))
     #     elif len(records) > 100:
     #         random_records = random.sample(sorted(records), 100)
