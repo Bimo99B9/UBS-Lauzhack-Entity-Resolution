@@ -69,14 +69,14 @@ def compute_similarity(row1, row2):
 
     # Define weights for each feature
     weights = {
-        "is_company": 2.0,
-        "parsed_name": 3.0,
-        "name_phonetic": 2.0,
-        "surname": 3.0,
-        "surname_phonetic": 2.0,
+        "is_company": 2,
+        "parsed_name": 10.0,
+        "name_phonetic": 10.0,
+        "surname": 10.0,
+        "surname_phonetic": 5.0,
         "given_name": 1.0,
-        "surname_length": 0.5,
-        "party_iban": 5.0,
+        "surname_length": 2,
+        "party_iban": 1.0,
         "party_phone": 1.0,
     }
 

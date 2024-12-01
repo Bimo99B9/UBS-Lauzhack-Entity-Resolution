@@ -291,11 +291,16 @@ def main():
     global df
     start_total = time.time()
     df = pd.read_csv("data/processed/external_parties_train.csv")
-    cols = ["parsed_name"]
-    thres = [0.8]
-    ngram = [4]
-    num_perm = 32
-    num_processes = 4
+    # cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city", "name_soundex", "party_info_unstructured"]
+    # thres = [0.4, 0.4, 0.4, 0.4, 0.3]
+    # ngram = [3, 4, 4, 3, 3]
+    # num_perm = 32
+    cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city"]
+    thres = [0.6, 0.6, 0.6]
+    ngram = [2, 3, 3]
+    num_perm = 128
+    
+    num_processes = 8
     logger.info("Initializing record IDs...")
     df["record_id"] = df.index
 
@@ -327,7 +332,7 @@ def main():
             candidate_pairs.update(combinations(random_records, 2))
 
     logger.info(f"Generated {len(candidate_pairs)} candidate pairs.")
-    similarity_threshold = 0.7
+    similarity_threshold = 0.5
     matched_pairs = set()
     unmatched_candidate_pairs = []
 
@@ -398,7 +403,7 @@ def main():
         clusters[cluster_id].add(record_id)
 
     # Create predicted_external_id column
-    df["external_id"] = df["record_id"].apply(lambda x: find(x))
+    # df["external_id"] = df["record_id"].apply(lambda x: find(x))
     
     # Save with only "transaction_reference_id" and "external_id" columns
     df[["transaction_reference_id", "external_id"]].to_csv("submission.csv", index=False)
