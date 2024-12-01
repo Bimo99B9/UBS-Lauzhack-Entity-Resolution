@@ -8,6 +8,9 @@ import multiprocessing as mp
 import logging
 import time
 import numpy as np
+from tqdm import tqdm
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Global variable for DataFrame
 df = None
@@ -196,13 +199,15 @@ def create_ngram_lsh_parallel(
 
     # Use Pool to compute MinHashes in parallel
     with mp.Pool(processes=num_processes) as pool:
-        results = pool.map(compute_minhash_chunk, args)
+        results = list(tqdm(pool.imap(compute_minhash_chunk, args), total=len(args), desc="Processing Chunks"))
 
+        results = pool.map(compute_minhash_chunk, args)
+    with ngram_lsh.insertion_session() as session:
     # Collect MinHashes and insert into LSH
-    for partial_minhashes in results:
-        for record_id, m in partial_minhashes.items():
-            ngram_minhashes[record_id] = m
-            ngram_lsh.insert(record_id, m)
+        for partial_minhashes in results:
+            for record_id, m in partial_minhashes.items():
+                ngram_minhashes[record_id] = m
+                session.insert(record_id, m)
 
     logger.info(
         f"Parallel LSH creation for column {colname} completed in {time.time() - start_time:.2f} seconds."
@@ -224,7 +229,7 @@ def compute_minhash_chunk(args):
         return set("".join(ng) for ng in ngrams(text, n))
 
     partial_minhashes = {}
-    for idx, row in chunk.iterrows():
+    for idx, row in tqdm(chunk.iterrows()):
         col = row[colname]
         record_id = row["record_id"]
 
@@ -241,6 +246,18 @@ def compute_minhash_chunk(args):
     return partial_minhashes
 
 
+def create_minhash_text_based(text, n, num_perm=128):
+    text = text.lower().replace(" ", "")
+    col_ngrams = set("".join(ng) for ng in ngrams(text, n))
+    
+    # col_ngrams = text_to_ngrams(col, n)
+
+    m = MinHash(num_perm=num_perm)
+    for ngram in col_ngrams:
+        m.update(ngram.encode("utf8"))
+    return m
+
+
 def init_worker(dataframe):
     """
     Initializer for worker processes to set the global DataFrame.
@@ -249,63 +266,71 @@ def init_worker(dataframe):
     df = dataframe
 
 
+def process_record(record_id, col, lsh_dict, ngram, num_perm):
+    """
+    Process a single record for LSH and returns composite key and record ID.
+    """
+    global df
+    val = df[col].iloc[record_id]
+    if pd.isnull(val):
+        return None, None
+    try:
+        minhash = create_minhash_text_based(val, ngram, num_perm)
+        query = lsh_dict[col].query(minhash)
+        key = frozenset(query)
+        lsh_dict[col].insert(record_id, minhash)
+        return key, record_id
+    except Exception as e:
+        logger.error(f"Error processing record {record_id}: {e}")
+        return None, None
+
 def main():
     global df
     start_total = time.time()
-    df = pd.read_csv("data/processed/external_parties_minitest.csv")
-    cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city"]
-    thres = [0.25, 0.8, 0.8]
-    ngram = [2, 3, 3]
-    num_perm = 128  # Increased from 32 to 128 to match blocking_utils.default
-    # num_processes = mp.cpu_count()
-    num_processes = 16
-    print(f"Number of processes: {num_processes}")
-
+    df = pd.read_csv("data/processed/external_parties_test.csv")
+    cols = ["parsed_name"]
+    thres = [0.6]
+    ngram = [4, 4]
+    num_perm = 32
+    num_processes = 6
     logger.info("Initializing record IDs...")
     df["record_id"] = df.index
 
-    # Initialize dictionaries to hold LSH and MinHashes for each column
-    lsh_dict = {}
-    minhash_dict = {}
+    lsh_dict = {col: MinHashLSH(threshold=thres[0], num_perm=num_perm) for col in cols}
 
-    # Create LSH for each column, processing rows in parallel
-    for col, th, n in zip(cols, thres, ngram):
-        lsh, minhash = create_ngram_lsh_parallel(
-            df, col, n=n, threshold=th, num_perm=num_perm, num_processes=num_processes
-        )
-        lsh_dict[col] = lsh
-        minhash_dict[col] = minhash
-
-    # Evaluate LSH groups
-    # for col in cols:
-    #     metrics = evaluate_lsh_groups(df, lsh_dict[col], minhash_dict[col])
-    #     logger.info(f"{col}: {metrics}")
-
-    ################ PAIRING STRATEGY ################
-    logger.info("Starting pairing strategy...")
+    logger.info("Starting pairing strategy with multithreading...")
     start_pairing = time.time()
 
     composite_key_to_records = defaultdict(set)
 
-    for record_id in df["record_id"]:
-        for col in cols:
-            if record_id in minhash_dict[col]:
-                minhash = minhash_dict[col][record_id]
-                neighbors = lsh_dict[col].query(minhash)
-                key = frozenset(neighbors)
+    with ThreadPoolExecutor(max_workers=num_processes) as executor:
+        futures = [
+            executor.submit(process_record, record_id, cols[0], lsh_dict, ngram[0], num_perm)
+            for record_id in tqdm(df["record_id"], desc="Submitting Tasks")
+        ]
+
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing Tasks"):
+            key, record_id = future.result()
+            if key is not None and record_id is not None:
                 composite_key_to_records[key].add(record_id)
 
     candidate_pairs = set()
     candidate_pairs_similarity = {}
 
     for records in composite_key_to_records.values():
-        if len(records) > 1:
+        if 20 > len(records) > 1 :
             candidate_pairs.update(combinations(sorted(records), 2))
+    #     elif len(records) > 100:
+    #         random_records = random.sample(sorted(records), 100)
+    #         # random_pairs = combinations(random_records, 2))
+    #         candidate_pairs.update(combinations(random_records, 2))
+        # elif len(records) > 100:
+            # print('echo', len(records))
 
     logger.info(f"Generated {len(candidate_pairs)} candidate pairs.")
 
     # Set a similarity threshold
-    similarity_threshold = 0.6
+    similarity_threshold = 0.5
 
     # Lists to store matched pairs and their similarity scores
     matched_pairs = set()
@@ -320,7 +345,7 @@ def main():
     ) as pool:
         results = pool.map(compute_similarity_pair, candidate_pairs)
 
-    for pair, sim_score in results:
+    for pair, sim_score in tqdm(results):
         candidate_pairs_similarity[pair] = sim_score
         if sim_score >= similarity_threshold:
             matched_pairs.add(pair)

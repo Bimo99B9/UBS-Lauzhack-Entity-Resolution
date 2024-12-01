@@ -8,6 +8,9 @@ import multiprocessing as mp
 import logging
 import time
 import numpy as np
+from tqdm import tqdm
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Global variable for DataFrame
 df = None
@@ -136,13 +139,17 @@ def count_lsh_blocks(name_lsh, name_minhashes):
         block = frozenset(neighbors)
         blocks.add(block)
 
-    # Print statistics
+    # Calculate block sizes
     block_sizes = [len(block) for block in blocks]
+
+    # Print statistics
     logger.info(f"Number of blocks: {len(blocks)}")
-    logger.info(f"Average block size: {sum(block_sizes)/len(block_sizes):.4f}")
+    logger.info(f"Average block size: {sum(block_sizes) / len(block_sizes):.4f}")
     logger.info(f"Max block size: {max(block_sizes)}")
     logger.info(f"Min block size: {min(block_sizes)}")
     logger.info(f"Blocks of size 1: {sum(1 for x in block_sizes if x == 1)}")
+    logger.info(f"Median block size: {np.median(block_sizes):.2f}")
+    logger.info(f"90th Percentile block size: {np.percentile(block_sizes, 90):.2f}")
 
     logger.info(
         f"LSH block counting completed in {time.time() - start_time:.2f} seconds."
@@ -196,13 +203,15 @@ def create_ngram_lsh_parallel(
 
     # Use Pool to compute MinHashes in parallel
     with mp.Pool(processes=num_processes) as pool:
-        results = pool.map(compute_minhash_chunk, args)
+        results = list(tqdm(pool.imap(compute_minhash_chunk, args), total=len(args), desc="Processing Chunks"))
 
+        results = pool.map(compute_minhash_chunk, args)
+    with ngram_lsh.insertion_session() as session:
     # Collect MinHashes and insert into LSH
-    for partial_minhashes in results:
-        for record_id, m in partial_minhashes.items():
-            ngram_minhashes[record_id] = m
-            ngram_lsh.insert(record_id, m)
+        for partial_minhashes in results:
+            for record_id, m in partial_minhashes.items():
+                ngram_minhashes[record_id] = m
+                session.insert(record_id, m)
 
     logger.info(
         f"Parallel LSH creation for column {colname} completed in {time.time() - start_time:.2f} seconds."
@@ -224,7 +233,7 @@ def compute_minhash_chunk(args):
         return set("".join(ng) for ng in ngrams(text, n))
 
     partial_minhashes = {}
-    for idx, row in chunk.iterrows():
+    for idx, row in tqdm(chunk.iterrows()):
         col = row[colname]
         record_id = row["record_id"]
 
@@ -241,6 +250,18 @@ def compute_minhash_chunk(args):
     return partial_minhashes
 
 
+def create_minhash_text_based(text, n, num_perm=128):
+    text = text.lower().replace(" ", "")
+    col_ngrams = set("".join(ng) for ng in ngrams(text, n))
+    
+    # col_ngrams = text_to_ngrams(col, n)
+
+    m = MinHash(num_perm=num_perm)
+    for ngram in col_ngrams:
+        m.update(ngram.encode("utf8"))
+    return m
+
+
 def init_worker(dataframe):
     """
     Initializer for worker processes to set the global DataFrame.
@@ -248,78 +269,88 @@ def init_worker(dataframe):
     global df
     df = dataframe
 
+def process_record(record_id, col, lsh_dict, ngram, num_perm):
+    """
+    Process a single record for LSH and returns composite key and record ID.
+    """
+    global df
+    val = df[col].iloc[record_id]
+    if pd.isnull(val):
+        return None, None
+    try:
+        minhash = create_minhash_text_based(val, ngram, num_perm)
+        query = lsh_dict[col].query(minhash)
+        key = frozenset(query)
+        lsh_dict[col].insert(record_id, minhash)
+        return key, record_id
+    except Exception as e:
+        logger.error(f"Error processing record {record_id}: {e}")
+        return None, None
 
 def main():
     global df
     start_total = time.time()
     df = pd.read_csv("data/processed/external_parties_train.csv")
-    cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city"]
-    thres = [0.25, 0.8, 0.8]
-    ngram = [2, 3, 3]
-    num_perm = 128  # Increased from 32 to 128 to match blocking_utils.default
-    num_processes = mp.cpu_count()
 
+    # List of columns, thresholds, and ngram sizes
+    cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city"]
+    thres = [0.3, 0.6, 0.6]
+    ngram = [2, 3, 3]
+    num_perm = 128
+    num_processes = 8
+
+    # Add a unique record ID for each row
     logger.info("Initializing record IDs...")
     df["record_id"] = df.index
 
-    # Initialize dictionaries to hold LSH and MinHashes for each column
-    lsh_dict = {}
-    minhash_dict = {}
+    # Initialize LSH dictionaries for all columns
+    lsh_dict = {
+        col: MinHashLSH(threshold=thres[i], num_perm=num_perm) 
+        for i, col in enumerate(cols)
+    }
 
-    # Create LSH for each column, processing rows in parallel
-    for col, th, n in zip(cols, thres, ngram):
-        lsh, minhash = create_ngram_lsh_parallel(
-            df, col, n=n, threshold=th, num_perm=num_perm, num_processes=num_processes
-        )
-        lsh_dict[col] = lsh
-        minhash_dict[col] = minhash
-
-    # Evaluate LSH groups
-    for col in cols:
-        metrics = evaluate_lsh_groups(df, lsh_dict[col], minhash_dict[col])
-        logger.info(f"{col}: {metrics}")
-
-    ################ PAIRING STRATEGY ################
-    logger.info("Starting pairing strategy...")
+    logger.info("Starting pairing strategy with multithreading...")
     start_pairing = time.time()
 
     composite_key_to_records = defaultdict(set)
 
-    for record_id in df["record_id"]:
-        for col in cols:
-            if record_id in minhash_dict[col]:
-                minhash = minhash_dict[col][record_id]
-                neighbors = lsh_dict[col].query(minhash)
-                key = frozenset(neighbors)
+    # Process records for each column in parallel
+    with ThreadPoolExecutor(max_workers=num_processes) as executor:
+        futures = []
+        for i, col in enumerate(cols):
+            for record_id in df["record_id"]:
+                futures.append(
+                    executor.submit(process_record, record_id, col, lsh_dict, ngram[i], num_perm)
+                )
+
+        # Collect results as they complete
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing Tasks"):
+            key, record_id = future.result()
+            if key is not None and record_id is not None:
                 composite_key_to_records[key].add(record_id)
 
-    candidate_pairs = set()
-    candidate_pairs_similarity = {}
 
+
+    candidate_pairs = set()
     for records in composite_key_to_records.values():
-        if len(records) > 1:
+        if 100 > len(records) > 1:
             candidate_pairs.update(combinations(sorted(records), 2))
+        elif len(records) > 100:
+            random_records = random.sample(sorted(records), 100)
+            candidate_pairs.update(combinations(random_records, 2))
 
     logger.info(f"Generated {len(candidate_pairs)} candidate pairs.")
-
-    # Set a similarity threshold
-    similarity_threshold = 0.6
-
-    # Lists to store matched pairs and their similarity scores
+    similarity_threshold = 0.5
     matched_pairs = set()
     unmatched_candidate_pairs = []
 
-    logger.info("Computing similarities for candidate pairs...")
+    logger.info("Computing similarities for candidate pairs with multiprocessing...")
     start_similarity = time.time()
 
-    # Use multiprocessing to compute similarities
-    with mp.Pool(
-        processes=num_processes, initializer=init_worker, initargs=(df,)
-    ) as pool:
+    with mp.Pool(processes=num_processes, initializer=init_worker, initargs=(df,)) as pool:
         results = pool.map(compute_similarity_pair, candidate_pairs)
 
-    for pair, sim_score in results:
-        candidate_pairs_similarity[pair] = sim_score
+    for pair, sim_score in tqdm(results, desc="Processing Similarities"):
         if sim_score >= similarity_threshold:
             matched_pairs.add(pair)
         else:
@@ -380,10 +411,16 @@ def main():
         clusters[cluster_id].add(record_id)
 
     # Create predicted_external_id column
-    df["predicted_external_id"] = df["record_id"].apply(lambda x: find(x))
+    # df["external_id"] = df["record_id"].apply(lambda x: find(x))
+    
+    # Save with only "transaction_reference_id" and "external_id" columns
+    df[["transaction_reference_id", "external_id"]].to_csv("submission.csv", index=False)
+    
     logger.info(
         f"Clustering completed in {time.time() - start_union_find:.2f} seconds."
     )
+
+    logger.info(f"Total script completed in {time.time() - start_total:.2f} seconds.")
 
     ################ EVALUATION ################
     logger.info("Starting evaluation of clusters...")
@@ -415,73 +452,73 @@ def main():
         f"Evaluation completed in {time.time() - start_evaluation:.2f} seconds."
     )
 
-    ################ ANALYZE MISSED PAIRS ################
-    logger.info("Analyzing missed pairs (False Negatives)...")
-    start_missed = time.time()
+    # ################ ANALYZE MISSED PAIRS ################
+    # logger.info("Analyzing missed pairs (False Negatives)...")
+    # start_missed = time.time()
 
-    # Identify False Negative pairs (missed pairs)
-    fn_pairs = true_pairs.difference(predicted_pairs)
+    # # Identify False Negative pairs (missed pairs)
+    # fn_pairs = true_pairs.difference(predicted_pairs)
 
-    missed_pairs_info = []
+    # missed_pairs_info = []
 
-    for pair in fn_pairs:
-        record_id1, record_id2 = pair
-        try:
-            record1 = df.loc[df["record_id"] == record_id1].iloc[0]
-            record2 = df.loc[df["record_id"] == record_id2].iloc[0]
-        except IndexError:
-            logger.error(f"Record ID not found for pair: {pair}")
-            continue
+    # for pair in fn_pairs:
+    #     record_id1, record_id2 = pair
+    #     try:
+    #         record1 = df.loc[df["record_id"] == record_id1].iloc[0]
+    #         record2 = df.loc[df["record_id"] == record_id2].iloc[0]
+    #     except IndexError:
+    #         logger.error(f"Record ID not found for pair: {pair}")
+    #         continue
 
-        # Check if the pair was a candidate pair
-        if pair in candidate_pairs or (pair[::-1] in candidate_pairs):
-            # They were compared but similarity score was below threshold
-            sim_score = candidate_pairs_similarity.get(
-                pair
-            ) or candidate_pairs_similarity.get(pair[::-1])
-            reason = (
-                f"Low similarity score ({sim_score:.4f})"
-                if sim_score is not None
-                else "Low similarity score"
-            )
-        else:
-            # They were not compared; likely in different blocks
-            sim_score = None
-            reason = "Different blocks (not compared)"
+    #     # Check if the pair was a candidate pair
+    #     if pair in candidate_pairs or (pair[::-1] in candidate_pairs):
+    #         # They were compared but similarity score was below threshold
+    #         sim_score = candidate_pairs_similarity.get(
+    #             pair
+    #         ) or candidate_pairs_similarity.get(pair[::-1])
+    #         reason = (
+    #             f"Low similarity score ({sim_score:.4f})"
+    #             if sim_score is not None
+    #             else "Low similarity score"
+    #         )
+    #     else:
+    #         # They were not compared; likely in different blocks
+    #         sim_score = None
+    #         reason = "Different blocks (not compared)"
 
-        # Collect information for exporting
-        missed_pairs_info.append(
-            {
-                "record_id_1": record_id1,
-                "parsed_name_1": record1["parsed_name"],
-                "external_id_1": record1["external_id"],
-                "record_id_2": record_id2,
-                "parsed_name_2": record2["parsed_name"],
-                "external_id_2": record2["external_id"],
-                "similarity_score": sim_score,
-                "reason": reason,
-            }
-        )
+    #     # Collect information for exporting
+    #     missed_pairs_info.append(
+    #         {
+    #             "record_id_1": record_id1,
+    #             "parsed_name_1": record1["parsed_name"],
+    #             "external_id_1": record1["external_id"],
+    #             "record_id_2": record_id2,
+    #             "parsed_name_2": record2["parsed_name"],
+    #             "external_id_2": record2["external_id"],
+    #             "similarity_score": sim_score,
+    #             "reason": reason,
+    #         }
+    #     )
 
-    # Create a DataFrame from the missed pairs information
-    missed_pairs_df = pd.DataFrame(missed_pairs_info)
+    # # Create a DataFrame from the missed pairs information
+    # missed_pairs_df = pd.DataFrame(missed_pairs_info)
 
-    # Save to CSV file
-    missed_pairs_df.to_csv("missed_pairs_analysis.csv", index=False)
+    # # Save to CSV file
+    # missed_pairs_df.to_csv("missed_pairs_analysis.csv", index=False)
 
-    logger.info(f"Number of missed pairs: {len(missed_pairs_df)}")
-    logger.info(
-        "Missed pairs with explanations have been saved to 'missed_pairs_analysis.csv'"
-    )
-    logger.info(
-        f"Missed pairs analysis completed in {time.time() - start_missed:.2f} seconds."
-    )
+    # logger.info(f"Number of missed pairs: {len(missed_pairs_df)}")
+    # logger.info(
+    #     "Missed pairs with explanations have been saved to 'missed_pairs_analysis.csv'"
+    # )
+    # logger.info(
+    #     f"Missed pairs analysis completed in {time.time() - start_missed:.2f} seconds."
+    # )
 
-    ################ OPTIONAL: ANALYSIS ################
-    logger.info("Analyzing reasons for missing pairs...")
-    reasons_counts = missed_pairs_df["reason"].value_counts()
-    # logger.info("\nReasons for missing pairs:")
-    # logger.info(reasons_counts.to_string())
+    # ################ OPTIONAL: ANALYSIS ################
+    # logger.info("Analyzing reasons for missing pairs...")
+    # reasons_counts = missed_pairs_df["reason"].value_counts()
+    # # logger.info("\nReasons for missing pairs:")
+    # # logger.info(reasons_counts.to_string())
 
     logger.info(f"Total script completed in {time.time() - start_total:.2f} seconds.")
 

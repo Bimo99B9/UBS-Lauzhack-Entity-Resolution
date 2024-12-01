@@ -2,6 +2,13 @@
 # UBS Entity Resolution - Lauzhack 2024
 ## Dignity Team
 
+- Daniel López Gala - daniel.lopezgala@epfl.ch 
+- Carlos Hurtado - carloshurtadocomin@gmail.com 
+- Mario Rico Ibáñez - mario.ricoibanez@epfl.ch
+- Tran Huong Lan - tranhuonglantk@gmail.com
+
+Kaggle Team Name: *Dignity*
+
 ---
 
 This project focuses on resolving financial entities by leveraging Local Sensitive Hashing (LSH) to efficiently identify and match similar non-UBS entities in transaction records. It is tailored for the financial industry, where precision and scalability are very important.
@@ -61,7 +68,7 @@ These methods ensure quick and accurate matching, making the approach ideal for 
 
 2. Run the main script:
    ```bash
-   python inference_test_2.py
+   python main.py
    ```
 
 3. Processed files will be saved in the `data/processed/` directory, including:
