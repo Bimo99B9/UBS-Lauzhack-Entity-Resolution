@@ -176,7 +176,6 @@ def compute_similarity_pair(pair):
         return (pair, 0.0)
 
 
-
 def create_ngram_lsh_parallel(
     df_local, colname, n=3, threshold=0.5, num_perm=128, num_processes=4
 ):
@@ -207,6 +206,10 @@ def create_ngram_lsh_parallel(
     logger.info(
         f"Parallel LSH creation for column {colname} completed in {time.time() - start_time:.2f} seconds."
     )
+
+    # Log the number of blocks and size distribution
+    # count_lsh_blocks(ngram_lsh, ngram_minhashes)
+
     return ngram_lsh, ngram_minhashes
 
 
@@ -252,14 +255,14 @@ def init_worker(dataframe):
 def main():
     global df
     start_total = time.time()
-    df = pd.read_csv("data/processed/external_parties_minitest.csv")
-    cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city"]
-    thres = [0.25, 0.8, 0.8]
-    ngram = [2, 3, 3]
-    num_perm = 128  # Increased from 32 to 128 to match blocking_utils.default
-    # num_processes = mp.cpu_count()
-    num_processes = 16
-    print(f"Number of processes: {num_processes}")
+    df = pd.read_csv("data/processed/external_parties_test.csv")
+    # cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city"]
+    cols = ["parsed_name"]
+    thres = [0.6, 0.8, 0.8]
+    ngram = [3, 3, 3]
+    num_perm = 32
+    num_processes = mp.cpu_count()
+    logger.info(f"Number of processes: {num_processes}")
 
     logger.info("Initializing record IDs...")
     df["record_id"] = df.index
@@ -270,23 +273,27 @@ def main():
 
     # Create LSH for each column, processing rows in parallel
     for col, th, n in zip(cols, thres, ngram):
+        logger.info(
+            f"Processing column: {col} with threshold: {th} and n-gram size: {n}"
+        )
         lsh, minhash = create_ngram_lsh_parallel(
             df, col, n=n, threshold=th, num_perm=num_perm, num_processes=num_processes
         )
         lsh_dict[col] = lsh
         minhash_dict[col] = minhash
+        logger.info(f"Completed LSH creation for column: {col}")
 
-    # Evaluate LSH groups
-    # for col in cols:
-    #     metrics = evaluate_lsh_groups(df, lsh_dict[col], minhash_dict[col])
-    #     logger.info(f"{col}: {metrics}")
+    ################ IMPROVED PAIRING STRATEGY ################
+    MAX_BLOCK_SIZE = 500  # Limit for block size to prevent explosion
+    secondary_cols = ["party_phone", "party_iban"]  # Secondary columns for splitting
+    seen_pairs = set()  # Track already-seen pairs
 
-    ################ PAIRING STRATEGY ################
-    logger.info("Starting pairing strategy...")
+    logger.info("Starting improved pairing strategy...")
     start_pairing = time.time()
 
     composite_key_to_records = defaultdict(set)
 
+    # Group records into composite blocks
     for record_id in df["record_id"]:
         for col in cols:
             if record_id in minhash_dict[col]:
@@ -296,13 +303,54 @@ def main():
                 composite_key_to_records[key].add(record_id)
 
     candidate_pairs = set()
-    candidate_pairs_similarity = {}
 
+    # Function to split a large block using a secondary blocking key
+    def split_block(records, secondary_col):
+        sub_blocks = defaultdict(set)
+        for record_id in records:
+            secondary_value = df.at[record_id, secondary_col]
+            sub_blocks[secondary_value].add(record_id)
+        return sub_blocks.values()
+
+    # Generate candidate pairs with constraints
     for records in composite_key_to_records.values():
-        if len(records) > 1:
-            candidate_pairs.update(combinations(sorted(records), 2))
+        block_size = len(records)
+        if block_size <= 1:
+            continue
+        if block_size <= MAX_BLOCK_SIZE:
+            # Generate pairs directly
+            for pair in combinations(sorted(records), 2):
+                if pair not in seen_pairs:
+                    candidate_pairs.add(pair)
+                    seen_pairs.add(pair)
+        else:
+            # Split the block using secondary blocking keys
+            logger.info(f"Block size {block_size} exceeds limit. Splitting the block.")
+            split_success = False
+            for secondary_col in secondary_cols:
+                if secondary_col in df.columns:
+                    sub_blocks = split_block(records, secondary_col)
+                    for sub_block in sub_blocks:
+                        sub_block_size = len(sub_block)
+                        if sub_block_size <= MAX_BLOCK_SIZE and sub_block_size > 1:
+                            for pair in combinations(sorted(sub_block), 2):
+                                if pair not in seen_pairs:
+                                    candidate_pairs.add(pair)
+                                    seen_pairs.add(pair)
+                    split_success = True
+                    break  # Stop after successful split
+            if not split_success:
+                # If no suitable secondary column is found, apply further splitting or skip
+                logger.warning(
+                    f"Unable to split block of size {block_size} using secondary columns. Skipping block."
+                )
+                continue
 
-    logger.info(f"Generated {len(candidate_pairs)} candidate pairs.")
+    logger.info(f"Generated {len(candidate_pairs)} unique candidate pairs.")
+    logger.info(
+        f"Pairing strategy completed in {time.time() - start_pairing:.2f} seconds."
+    )
+    #############################################################
 
     # Set a similarity threshold
     similarity_threshold = 0.6
@@ -320,6 +368,7 @@ def main():
     ) as pool:
         results = pool.map(compute_similarity_pair, candidate_pairs)
 
+    candidate_pairs_similarity = {}
     for pair, sim_score in results:
         candidate_pairs_similarity[pair] = sim_score
         if sim_score >= similarity_threshold:
@@ -334,19 +383,24 @@ def main():
 
     # Additional pairing based on 'party_iban' and 'party_phone'
     logger.info("Adding pairs based on 'party_iban' and 'party_phone'...")
-    party_iban_to_record_ids = (
-        df.groupby("party_iban")["record_id"].apply(list).to_dict()
-    )
-    party_phone_to_record_ids = (
-        df.groupby("party_phone")["record_id"].apply(list).to_dict()
-    )
-
-    for record_ids in party_iban_to_record_ids.values():
-        if len(record_ids) > 1:
-            matched_pairs.update(combinations(sorted(record_ids), 2))
-    for record_ids in party_phone_to_record_ids.values():
-        if len(record_ids) > 1:
-            matched_pairs.update(combinations(sorted(record_ids), 2))
+    if "party_iban" in df.columns:
+        party_iban_to_record_ids = (
+            df.groupby("party_iban")["record_id"].apply(list).to_dict()
+        )
+        for record_ids in party_iban_to_record_ids.values():
+            if len(record_ids) > 1:
+                for pair in combinations(sorted(record_ids), 2):
+                    if pair not in matched_pairs:
+                        matched_pairs.add(pair)
+    if "party_phone" in df.columns:
+        party_phone_to_record_ids = (
+            df.groupby("party_phone")["record_id"].apply(list).to_dict()
+        )
+        for record_ids in party_phone_to_record_ids.values():
+            if len(record_ids) > 1:
+                for pair in combinations(sorted(record_ids), 2):
+                    if pair not in matched_pairs:
+                        matched_pairs.add(pair)
 
     logger.info(
         f"Total matched pairs after adding IBAN and phone: {len(matched_pairs)}"
@@ -354,7 +408,7 @@ def main():
     logger.info(
         f"Pairing strategy completed in {time.time() - start_pairing:.2f} seconds."
     )
-    ###############################################
+    ###############################################################
 
     # Union-Find implementation
     logger.info("Starting Union-Find for clustering...")
@@ -383,10 +437,17 @@ def main():
 
     # Create predicted_external_id column
     df["external_id"] = df["record_id"].apply(lambda x: find(x))
-    
+
     # Save with only "transaction_reference_id" and "external_id" columns
-    df[["transaction_reference_id", "external_id"]].to_csv("submission.csv", index=False)
-    
+    # Ensure 'transaction_reference_id' exists in the test data
+    if "transaction_reference_id" not in df.columns:
+        logger.error("'transaction_reference_id' column is missing in the test data.")
+    else:
+        df[["transaction_reference_id", "external_id"]].to_csv(
+            "submission.csv", index=False
+        )
+        logger.info("Submission file 'submission.csv' has been created successfully.")
+
     logger.info(
         f"Clustering completed in {time.time() - start_union_find:.2f} seconds."
     )
