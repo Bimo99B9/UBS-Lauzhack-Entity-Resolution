@@ -2,8 +2,7 @@ import pandas as pd
 from itertools import combinations
 from collections import defaultdict
 from blocking_utils.blocking_utils import compute_similarity
-from datasketch import MinHash, MinHashLSH
-from nltk.util import ngrams
+from datasketch import MinHashLSH
 import multiprocessing as mp
 import logging
 import time
@@ -258,8 +257,8 @@ def main():
     df = pd.read_csv("data/processed/external_parties_test.csv")
     # cols = ["parsed_name", "parsed_address_street_name", "parsed_address_city"]
     cols = ["parsed_name"]
-    thres = [0.6, 0.8, 0.8]
-    ngram = [3, 3, 3]
+    thres = [0.7, 0.8, 0.8]
+    ngram = [2, 3, 3]
     num_perm = 32
     num_processes = mp.cpu_count()
     logger.info(f"Number of processes: {num_processes}")
@@ -353,7 +352,7 @@ def main():
     #############################################################
 
     # Set a similarity threshold
-    similarity_threshold = 0.6
+    similarity_threshold = 0.75
 
     # Lists to store matched pairs and their similarity scores
     matched_pairs = set()
