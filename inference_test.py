@@ -337,19 +337,19 @@ def main():
     candidate_pairs_similarity = {}
 
     for records in composite_key_to_records.values():
-        if len(records) > 1 :
+        if 100 > len(records) > 1 :
             candidate_pairs.update(combinations(sorted(records), 2))
-        # elif len(records) > 100:
-        #     random_records = random.sample(sorted(records), 100)
+        elif len(records) > 100:
+            random_records = random.sample(sorted(records), 100)
             # random_pairs = combinations(random_records, 2))
-        #     candidate_pairs.update(combinations(random_records, 2))
+            candidate_pairs.update(combinations(random_records, 2))
         # elif len(records) > 100:
             # print('echo', len(records))
 
     logger.info(f"Generated {len(candidate_pairs)} candidate pairs.")
 
     # Set a similarity threshold
-    similarity_threshold = 0.6
+    similarity_threshold = 0.7
 
     # Lists to store matched pairs and their similarity scores
     matched_pairs = set()
@@ -429,7 +429,7 @@ def main():
     df["external_id"] = df["record_id"].apply(lambda x: find(x))
     
     # Save with only "transaction_reference_id" and "external_id" columns
-    df[["transaction_reference_id", "external_id"]].to_csv("submission_1.csv", index=False)
+    df[["transaction_reference_id", "external_id"]].to_csv("submission.csv", index=False)
     
     logger.info(
         f"Clustering completed in {time.time() - start_union_find:.2f} seconds."
