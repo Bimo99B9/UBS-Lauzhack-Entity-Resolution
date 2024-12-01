@@ -2,6 +2,7 @@ import jellyfish
 from datasketch import MinHash, MinHashLSH
 import pandas as pd
 from nltk.util import ngrams
+from tqdm import tqdm
 
 def create_ngram_lsh(df, colname, n=3, threshold=0.5, num_perm=128):
     # removes spaces and creates ngrams
@@ -15,7 +16,7 @@ def create_ngram_lsh(df, colname, n=3, threshold=0.5, num_perm=128):
         return set(''.join(ng) for ng in ngrams(text, n))
 
     # Create MinHash for each address using n-grams
-    for idx, row in df.iterrows():
+    for idx, row in tqdm(df.iterrows()):
         col = row[colname]
         record_id = row['record_id']
         
