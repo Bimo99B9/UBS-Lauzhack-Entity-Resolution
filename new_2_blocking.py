@@ -5,8 +5,7 @@ from blocking_utils.blocking_utils import compute_similarity
 import logging
 import time
 from tqdm import tqdm
-import multiprocessing as mp
-import random
+from concurrent.futures import ThreadPoolExecutor
 
 # Configure logging
 logging.basicConfig(
@@ -15,6 +14,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
+
 
 def generate_sorting_key(row, key_columns):
     """
@@ -27,38 +27,38 @@ def generate_sorting_key(row, key_columns):
     )
     return combined_key
 
-def compute_similarity_pair(pair):
-    """
-    Computes the similarity score for a given pair of record IDs.
-    """
-    record_id1, record_id2 = pair
-    global df
-    try:
-        row1 = df.loc[df['record_id'] == record_id1].squeeze()
-        row2 = df.loc[df['record_id'] == record_id2].squeeze()
-        sim_score = compute_similarity(row1, row2)
-        return (pair, sim_score)
-    except Exception as e:
-        logger.error(f"Error computing similarity for pair {pair}: {e}")
-        return (pair, 0.0)
 
-def init_worker(dataframe):
+def compute_similarity_pairs(pairs, df, similarity_threshold):
     """
-    Initializer for worker processes to set the global DataFrame.
+    Compute similarity scores for a list of record ID pairs.
     """
-    global df
-    df = dataframe
+    results = []
+    for record_id1, record_id2 in pairs:
+        try:
+            row1 = df.loc[record_id1]
+            row2 = df.loc[record_id2]
+            sim_score = compute_similarity(row1, row2)
+            if sim_score >= similarity_threshold:
+                results.append((record_id1, record_id2))
+        except Exception as e:
+            logger.error(
+                f"Error computing similarity for pair ({record_id1}, {record_id2}): {e}"
+            )
+    return results
 
-def evaluate_clusters(df, predicted_col='predicted_external_id', true_col='external_id'):
+
+def evaluate_clusters(
+    df, predicted_col="predicted_external_id", true_col="external_id"
+):
     """
     Evaluate clustering performance based on ground truth.
     """
     logger.info("Starting evaluation of clusters...")
     start_time = time.time()
-    
+
     # Ground truth clusters
     ground_truth = df.groupby(true_col)["record_id"].apply(set).to_dict()
-    
+
     # Predicted clusters
     predicted_clusters = df.groupby(predicted_col)["record_id"].apply(set).to_dict()
 
@@ -82,17 +82,14 @@ def evaluate_clusters(df, predicted_col='predicted_external_id', true_col='exter
     precision = TP / (TP + FP) if (TP + FP) > 0 else 0
     recall = TP / (TP + FN) if (TP + FN) > 0 else 0
     f1_score = (
-        2 * precision * recall / (precision + recall)
-        if (precision + recall) > 0
-        else 0
+        2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
     )
 
     logger.info(f"Precision: {precision:.4f}")
     logger.info(f"Recall: {recall:.4f}")
     logger.info(f"F1-Score: {f1_score:.4f}")
-    logger.info(
-        f"Evaluation completed in {time.time() - start_time:.2f} seconds."
-    )
+    logger.info(f"Evaluation completed in {time.time() - start_time:.2f} seconds.")
+
 
 def main():
     logger.info("Loading data...")
@@ -103,8 +100,8 @@ def main():
     df["record_id"] = df.index
 
     # Keep original external_id as ground truth
-    df['true_external_id'] = df['external_id']
-    
+    df["true_external_id"] = df["external_id"]
+
     # Specify columns for sorting key
     key_columns = [
         "parsed_name",
@@ -114,69 +111,19 @@ def main():
 
     # Generate sorting keys
     logger.info("Generating sorting keys...")
-    df["sorting_key"] = df.apply(lambda row: generate_sorting_key(row, key_columns), axis=1)
+    df["sorting_key"] = df.apply(
+        lambda row: generate_sorting_key(row, key_columns), axis=1
+    )
 
     # Sort the DataFrame based on the sorting key
     logger.info("Sorting records...")
     df_sorted = df.sort_values("sorting_key").reset_index(drop=True)
 
-    # Define window size
-    window_size = 4  # Adjust this size based on the dataset and desired performance
-    logger.info(f"Using sliding window of size {window_size}")
+    # Define window size and similarity threshold
+    window_size = 4
+    similarity_threshold = 0.75
 
-    # Generate candidate pairs using the sliding window
-    logger.info("Generating candidate pairs using the Sorted Neighborhood Method...")
-    candidate_pairs = set()
-    total_records = len(df_sorted)
-    for i in tqdm(range(total_records - window_size + 1), desc="Sliding Window"):
-        window_records = df_sorted.iloc[i:i+window_size]["record_id"].tolist()
-        pairs_in_window = combinations(window_records, 2)
-        candidate_pairs.update(pairs_in_window)
-
-    logger.info(f"Total candidate pairs generated: {len(candidate_pairs)}")
-
-    # Step 3: Compute similarities
-    logger.info("Computing similarities for candidate pairs...")
-    similarity_threshold = 0.75 # Adjust based on your requirements
-    matched_pairs = set()
-
-    with mp.Pool(processes=mp.cpu_count(), initializer=init_worker, initargs=(df,)) as pool:
-        results = pool.imap_unordered(compute_similarity_pair, candidate_pairs)
-        for pair, sim_score in tqdm(results, total=len(candidate_pairs), desc="Computing Similarities"):
-            if sim_score >= similarity_threshold:
-                matched_pairs.add(pair)
-    
-    logger.info(f"Matched pairs after similarity threshold: {len(matched_pairs)}")
-
-    # Step 3.5: Add pairs based on 'party_iban' and 'party_phone'
-    logger.info("Adding pairs based on 'party_iban' and 'party_phone'...")
-    party_iban_to_record_ids = (
-        df.groupby("party_iban")["record_id"].apply(list).to_dict()
-    )
-    party_phone_to_record_ids = (
-        df.groupby("party_phone")["record_id"].apply(list).to_dict()
-    )
-
-    iban_pairs = 0
-    phone_pairs = 0
-
-    for record_ids in party_iban_to_record_ids.values():
-        if len(record_ids) > 1:
-            new_pairs = set(combinations(sorted(record_ids), 2))
-            matched_pairs.update(new_pairs)
-            iban_pairs += len(new_pairs)
-    for record_ids in party_phone_to_record_ids.values():
-        if len(record_ids) > 1:
-            new_pairs = set(combinations(sorted(record_ids), 2))
-            matched_pairs.update(new_pairs)
-            phone_pairs += len(new_pairs)
-
-    logger.info(f"Added {iban_pairs} pairs based on 'party_iban'.")
-    logger.info(f"Added {phone_pairs} pairs based on 'party_phone'.")
-    logger.info(f"Total matched pairs after adding IBAN and phone: {len(matched_pairs)}")
-
-    # Step 4: Union-Find for clustering
-    logger.info("Clustering using Union-Find...")
+    # Initialize Union-Find data structure
     parent = {record_id: record_id for record_id in df["record_id"]}
 
     def find(u):
@@ -190,26 +137,58 @@ def main():
         if pu != pv:
             parent[pu] = pv
 
-    for u, v in matched_pairs:
-        union(u, v)
+    # Process candidate pairs window by window
+    logger.info("Processing candidate pairs window by window...")
+    total_records = len(df_sorted)
+    df.set_index("record_id", inplace=True)
 
-    # Generate clusters
-    clusters = defaultdict(set)
-    for record_id in df["record_id"]:
-        cluster_id = find(record_id)
-        clusters[cluster_id].add(record_id)
+    with ThreadPoolExecutor(max_workers=22) as executor:
+        for i in tqdm(
+            range(total_records - window_size + 1), desc="Processing Windows"
+        ):
+            window_df = df_sorted.iloc[i : i + window_size]
+            window_record_ids = window_df["record_id"].tolist()
+            candidate_pairs = list(combinations(window_record_ids, 2))
 
-    # Step 5: Assign predicted external IDs based on clusters
-    df["predicted_external_id"] = df["record_id"].apply(lambda x: find(x))
+            # Process candidate pairs in parallel
+            future = executor.submit(
+                compute_similarity_pairs, candidate_pairs, df, similarity_threshold
+            )
+            results = future.result()
+
+            for record_id1, record_id2 in results:
+                union(record_id1, record_id2)
+
+    logger.info("Processing of candidate pairs completed.")
+
+    # Add unions based on 'party_iban' and 'party_phone' without generating all combinations
+    logger.info("Processing 'party_iban' and 'party_phone' groups for union...")
+    df.reset_index(inplace=True)
+    for col in ["party_iban", "party_phone"]:
+        groups = df.groupby(col)["record_id"].apply(list).to_dict()
+        for record_ids in groups.values():
+            if len(record_ids) > 1:
+                first_id = record_ids[0]
+                for other_id in record_ids[1:]:
+                    union(first_id, other_id)
+
+    # Assign predicted external IDs based on clusters
+    logger.info("Assigning external IDs based on clusters...")
+    df["predicted_external_id"] = df.index.map(lambda x: find(x))
 
     # Save results
     logger.info("Saving results to submission.csv...")
-    df[["transaction_reference_id", "predicted_external_id"]].to_csv("submission.csv", index=False)
+    df[["transaction_reference_id", "predicted_external_id"]].to_csv(
+        "submission.csv", index=False
+    )
 
     # Step 6: Evaluate clustering
-    evaluate_clusters(df, predicted_col='predicted_external_id', true_col='true_external_id')
+    evaluate_clusters(
+        df, predicted_col="predicted_external_id", true_col="true_external_id"
+    )
 
     logger.info(f"Script completed in {time.time() - start_time:.2f} seconds.")
+
 
 if __name__ == "__main__":
     main()
