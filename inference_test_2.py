@@ -10,6 +10,7 @@ import time
 import numpy as np
 from tqdm import tqdm
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Global variable for DataFrame
 df = None
@@ -138,13 +139,17 @@ def count_lsh_blocks(name_lsh, name_minhashes):
         block = frozenset(neighbors)
         blocks.add(block)
 
-    # Print statistics
+    # Calculate block sizes
     block_sizes = [len(block) for block in blocks]
+
+    # Print statistics
     logger.info(f"Number of blocks: {len(blocks)}")
-    logger.info(f"Average block size: {sum(block_sizes)/len(block_sizes):.4f}")
+    logger.info(f"Average block size: {sum(block_sizes) / len(block_sizes):.4f}")
     logger.info(f"Max block size: {max(block_sizes)}")
     logger.info(f"Min block size: {min(block_sizes)}")
     logger.info(f"Blocks of size 1: {sum(1 for x in block_sizes if x == 1)}")
+    logger.info(f"Median block size: {np.median(block_sizes):.2f}")
+    logger.info(f"90th Percentile block size: {np.percentile(block_sizes, 90):.2f}")
 
     logger.info(
         f"LSH block counting completed in {time.time() - start_time:.2f} seconds."
@@ -264,6 +269,23 @@ def init_worker(dataframe):
     global df
     df = dataframe
 
+def process_record(record_id, col, lsh_dict, ngram, num_perm):
+    """
+    Process a single record for LSH and returns composite key and record ID.
+    """
+    global df
+    val = df[col].iloc[record_id]
+    if pd.isnull(val):
+        return None, None
+    try:
+        minhash = create_minhash_text_based(val, ngram, num_perm)
+        query = lsh_dict[col].query(minhash)
+        key = frozenset(query)
+        lsh_dict[col].insert(record_id, minhash)
+        return key, record_id
+    except Exception as e:
+        logger.error(f"Error processing record {record_id}: {e}")
+        return None, None
 
 def main():
     global df
@@ -272,100 +294,50 @@ def main():
     cols = ["parsed_name"]
     thres = [0.8]
     ngram = [4]
-    num_perm = 32  # Increased from 32 to 128 to match blocking_utils.default
+    num_perm = 32
     num_processes = 4
-    # num_processes = 4
-    print(f"Number of processes: {num_processes}")
-
     logger.info("Initializing record IDs...")
     df["record_id"] = df.index
 
-    # Initialize dictionaries to hold LSH and MinHashes for each column
-    lsh_dict = {}
+    lsh_dict = {col: MinHashLSH(threshold=thres[0], num_perm=num_perm) for col in cols}
 
-    # Create LSH for each column, processing rows in parallel
-    # for col, th, n in zip(cols, thres, ngram):
-    #     lsh, minhash = create_ngram_lsh_parallel(
-    #         df, col, n=n, threshold=th, num_perm=num_perm, num_processes=num_processes
-    #     )
-    #     lsh_dict[col] = lsh
-    #     minhash_dict[col] = minhash
-
-    # Evaluate LSH groups
-    # for col in cols:
-    #     metrics = evaluate_lsh_groups(df, lsh_dict[col], minhash_dict[col])
-    #     logger.info(f"{col}: {metrics}")
-
-    ################ PAIRING STRATEGY ################
-    logger.info("Starting pairing strategy...")
+    logger.info("Starting pairing strategy with multithreading...")
     start_pairing = time.time()
 
     composite_key_to_records = defaultdict(set)
 
-    for record_id in tqdm(df["record_id"]):
-        for col in cols:
-            val = df[col].iloc[record_id]
-            if col not in lsh_dict:
-                lsh_dict[col] = MinHashLSH(threshold=thres[0], num_perm=num_perm)
+    with ThreadPoolExecutor(max_workers=num_processes) as executor:
+        futures = [
+            executor.submit(process_record, record_id, cols[0], lsh_dict, ngram[0], num_perm)
+            for record_id in tqdm(df["record_id"], desc="Submitting Tasks")
+        ]
 
-            if val is None or pd.isnull(val):
-                continue
-            try:
-                minhash = create_minhash_text_based(val, ngram[0], num_perm)
-            except:
-                print('error')
-                print(val)
-                raise('error')
-            query = lsh_dict[col].query(minhash)
-            key = frozenset(query)
-            composite_key_to_records[key].add(record_id)
-            lsh_dict[col].insert(record_id, minhash)
-            
-            # record_id in minhash_dict[col]:
-            #     minhash = minhash_dict[col][record_id]
-            #     neighbors = lsh_dict[col].query(minhash)
-            #     key = frozenset(neighbors)
-            #     if 100 > len(key) > 1:
-            #         composite_key_to_records[frozenset(key)].add(record_id)
-            #     elif len(key)>100:
-            #         random_set = random.sample(frozenset(key), 100)
-            #         composite_key_to_records[random_set].add(record_id)
-                    # print('echo', len(key))
-                # composite_key_to_records[key].add(record_id)
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing Tasks"):
+            key, record_id = future.result()
+            if key is not None and record_id is not None:
+                composite_key_to_records[key].add(record_id)
+
 
     candidate_pairs = set()
-    candidate_pairs_similarity = {}
-
     for records in composite_key_to_records.values():
-        if 100 > len(records) > 1 :
+        if 100 > len(records) > 1:
             candidate_pairs.update(combinations(sorted(records), 2))
         elif len(records) > 100:
             random_records = random.sample(sorted(records), 100)
-            # random_pairs = combinations(random_records, 2))
             candidate_pairs.update(combinations(random_records, 2))
-        # elif len(records) > 100:
-            # print('echo', len(records))
 
     logger.info(f"Generated {len(candidate_pairs)} candidate pairs.")
-
-    # Set a similarity threshold
     similarity_threshold = 0.7
-
-    # Lists to store matched pairs and their similarity scores
     matched_pairs = set()
     unmatched_candidate_pairs = []
 
-    logger.info("Computing similarities for candidate pairs...")
+    logger.info("Computing similarities for candidate pairs with multiprocessing...")
     start_similarity = time.time()
 
-    # Use multiprocessing to compute similarities
-    with mp.Pool(
-        processes=num_processes, initializer=init_worker, initargs=(df,)
-    ) as pool:
+    with mp.Pool(processes=num_processes, initializer=init_worker, initargs=(df,)) as pool:
         results = pool.map(compute_similarity_pair, candidate_pairs)
 
-    for pair, sim_score in tqdm(results):
-        candidate_pairs_similarity[pair] = sim_score
+    for pair, sim_score in tqdm(results, desc="Processing Similarities"):
         if sim_score >= similarity_threshold:
             matched_pairs.add(pair)
         else:
@@ -467,73 +439,73 @@ def main():
         f"Evaluation completed in {time.time() - start_evaluation:.2f} seconds."
     )
 
-    ################ ANALYZE MISSED PAIRS ################
-    logger.info("Analyzing missed pairs (False Negatives)...")
-    start_missed = time.time()
+    # ################ ANALYZE MISSED PAIRS ################
+    # logger.info("Analyzing missed pairs (False Negatives)...")
+    # start_missed = time.time()
 
-    # Identify False Negative pairs (missed pairs)
-    fn_pairs = true_pairs.difference(predicted_pairs)
+    # # Identify False Negative pairs (missed pairs)
+    # fn_pairs = true_pairs.difference(predicted_pairs)
 
-    missed_pairs_info = []
+    # missed_pairs_info = []
 
-    for pair in fn_pairs:
-        record_id1, record_id2 = pair
-        try:
-            record1 = df.loc[df["record_id"] == record_id1].iloc[0]
-            record2 = df.loc[df["record_id"] == record_id2].iloc[0]
-        except IndexError:
-            logger.error(f"Record ID not found for pair: {pair}")
-            continue
+    # for pair in fn_pairs:
+    #     record_id1, record_id2 = pair
+    #     try:
+    #         record1 = df.loc[df["record_id"] == record_id1].iloc[0]
+    #         record2 = df.loc[df["record_id"] == record_id2].iloc[0]
+    #     except IndexError:
+    #         logger.error(f"Record ID not found for pair: {pair}")
+    #         continue
 
-        # Check if the pair was a candidate pair
-        if pair in candidate_pairs or (pair[::-1] in candidate_pairs):
-            # They were compared but similarity score was below threshold
-            sim_score = candidate_pairs_similarity.get(
-                pair
-            ) or candidate_pairs_similarity.get(pair[::-1])
-            reason = (
-                f"Low similarity score ({sim_score:.4f})"
-                if sim_score is not None
-                else "Low similarity score"
-            )
-        else:
-            # They were not compared; likely in different blocks
-            sim_score = None
-            reason = "Different blocks (not compared)"
+    #     # Check if the pair was a candidate pair
+    #     if pair in candidate_pairs or (pair[::-1] in candidate_pairs):
+    #         # They were compared but similarity score was below threshold
+    #         sim_score = candidate_pairs_similarity.get(
+    #             pair
+    #         ) or candidate_pairs_similarity.get(pair[::-1])
+    #         reason = (
+    #             f"Low similarity score ({sim_score:.4f})"
+    #             if sim_score is not None
+    #             else "Low similarity score"
+    #         )
+    #     else:
+    #         # They were not compared; likely in different blocks
+    #         sim_score = None
+    #         reason = "Different blocks (not compared)"
 
-        # Collect information for exporting
-        missed_pairs_info.append(
-            {
-                "record_id_1": record_id1,
-                "parsed_name_1": record1["parsed_name"],
-                "external_id_1": record1["external_id"],
-                "record_id_2": record_id2,
-                "parsed_name_2": record2["parsed_name"],
-                "external_id_2": record2["external_id"],
-                "similarity_score": sim_score,
-                "reason": reason,
-            }
-        )
+    #     # Collect information for exporting
+    #     missed_pairs_info.append(
+    #         {
+    #             "record_id_1": record_id1,
+    #             "parsed_name_1": record1["parsed_name"],
+    #             "external_id_1": record1["external_id"],
+    #             "record_id_2": record_id2,
+    #             "parsed_name_2": record2["parsed_name"],
+    #             "external_id_2": record2["external_id"],
+    #             "similarity_score": sim_score,
+    #             "reason": reason,
+    #         }
+    #     )
 
-    # Create a DataFrame from the missed pairs information
-    missed_pairs_df = pd.DataFrame(missed_pairs_info)
+    # # Create a DataFrame from the missed pairs information
+    # missed_pairs_df = pd.DataFrame(missed_pairs_info)
 
-    # Save to CSV file
-    missed_pairs_df.to_csv("missed_pairs_analysis.csv", index=False)
+    # # Save to CSV file
+    # missed_pairs_df.to_csv("missed_pairs_analysis.csv", index=False)
 
-    logger.info(f"Number of missed pairs: {len(missed_pairs_df)}")
-    logger.info(
-        "Missed pairs with explanations have been saved to 'missed_pairs_analysis.csv'"
-    )
-    logger.info(
-        f"Missed pairs analysis completed in {time.time() - start_missed:.2f} seconds."
-    )
+    # logger.info(f"Number of missed pairs: {len(missed_pairs_df)}")
+    # logger.info(
+    #     "Missed pairs with explanations have been saved to 'missed_pairs_analysis.csv'"
+    # )
+    # logger.info(
+    #     f"Missed pairs analysis completed in {time.time() - start_missed:.2f} seconds."
+    # )
 
-    ################ OPTIONAL: ANALYSIS ################
-    logger.info("Analyzing reasons for missing pairs...")
-    reasons_counts = missed_pairs_df["reason"].value_counts()
-    # logger.info("\nReasons for missing pairs:")
-    # logger.info(reasons_counts.to_string())
+    # ################ OPTIONAL: ANALYSIS ################
+    # logger.info("Analyzing reasons for missing pairs...")
+    # reasons_counts = missed_pairs_df["reason"].value_counts()
+    # # logger.info("\nReasons for missing pairs:")
+    # # logger.info(reasons_counts.to_string())
 
     logger.info(f"Total script completed in {time.time() - start_total:.2f} seconds.")
 

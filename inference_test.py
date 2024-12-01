@@ -10,6 +10,7 @@ import time
 import numpy as np
 from tqdm import tqdm
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Global variable for DataFrame
 df = None
@@ -265,91 +266,71 @@ def init_worker(dataframe):
     df = dataframe
 
 
+def process_record(record_id, col, lsh_dict, ngram, num_perm):
+    """
+    Process a single record for LSH and returns composite key and record ID.
+    """
+    global df
+    val = df[col].iloc[record_id]
+    if pd.isnull(val):
+        return None, None
+    try:
+        minhash = create_minhash_text_based(val, ngram, num_perm)
+        query = lsh_dict[col].query(minhash)
+        key = frozenset(query)
+        lsh_dict[col].insert(record_id, minhash)
+        return key, record_id
+    except Exception as e:
+        logger.error(f"Error processing record {record_id}: {e}")
+        return None, None
+
 def main():
     global df
     start_total = time.time()
     df = pd.read_csv("data/processed/external_parties_test.csv")
     cols = ["parsed_name"]
-    thres = [0.8]
-    ngram = [4]
-    num_perm = 32  # Increased from 32 to 128 to match blocking_utils.default
-    num_processes = 4
-    # num_processes = 4
-    print(f"Number of processes: {num_processes}")
-
+    thres = [0.6]
+    ngram = [4, 4]
+    num_perm = 32
+    num_processes = 6
     logger.info("Initializing record IDs...")
     df["record_id"] = df.index
 
-    # Initialize dictionaries to hold LSH and MinHashes for each column
-    lsh_dict = {}
+    lsh_dict = {col: MinHashLSH(threshold=thres[0], num_perm=num_perm) for col in cols}
 
-    # Create LSH for each column, processing rows in parallel
-    # for col, th, n in zip(cols, thres, ngram):
-    #     lsh, minhash = create_ngram_lsh_parallel(
-    #         df, col, n=n, threshold=th, num_perm=num_perm, num_processes=num_processes
-    #     )
-    #     lsh_dict[col] = lsh
-    #     minhash_dict[col] = minhash
-
-    # Evaluate LSH groups
-    # for col in cols:
-    #     metrics = evaluate_lsh_groups(df, lsh_dict[col], minhash_dict[col])
-    #     logger.info(f"{col}: {metrics}")
-
-    ################ PAIRING STRATEGY ################
-    logger.info("Starting pairing strategy...")
+    logger.info("Starting pairing strategy with multithreading...")
     start_pairing = time.time()
 
     composite_key_to_records = defaultdict(set)
 
-    for record_id in tqdm(df["record_id"]):
-        for col in cols:
-            val = df[col].iloc[record_id]
-            if col not in lsh_dict:
-                lsh_dict[col] = MinHashLSH(threshold=thres[0], num_perm=num_perm)
+    with ThreadPoolExecutor(max_workers=num_processes) as executor:
+        futures = [
+            executor.submit(process_record, record_id, cols[0], lsh_dict, ngram[0], num_perm)
+            for record_id in tqdm(df["record_id"], desc="Submitting Tasks")
+        ]
 
-            if val is None or pd.isnull(val):
-                continue
-            try:
-                minhash = create_minhash_text_based(val, ngram[0], num_perm)
-            except:
-                print('error')
-                print(val)
-                raise('error')
-            query = lsh_dict[col].query(minhash)
-            key = frozenset(query)
-            composite_key_to_records[key].add(record_id)
-            lsh_dict[col].insert(record_id, minhash)
-            
-            # record_id in minhash_dict[col]:
-            #     minhash = minhash_dict[col][record_id]
-            #     neighbors = lsh_dict[col].query(minhash)
-            #     key = frozenset(neighbors)
-            #     if 100 > len(key) > 1:
-            #         composite_key_to_records[frozenset(key)].add(record_id)
-            #     elif len(key)>100:
-            #         random_set = random.sample(frozenset(key), 100)
-            #         composite_key_to_records[random_set].add(record_id)
-                    # print('echo', len(key))
-                # composite_key_to_records[key].add(record_id)
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing Tasks"):
+            key, record_id = future.result()
+            if key is not None and record_id is not None:
+                composite_key_to_records[key].add(record_id)
 
     candidate_pairs = set()
     candidate_pairs_similarity = {}
 
     for records in composite_key_to_records.values():
-        if 100 > len(records) > 1 :
+        if 20 > len(records) > 1 :
             candidate_pairs.update(combinations(sorted(records), 2))
-        elif len(records) > 100:
-            random_records = random.sample(sorted(records), 100)
-            # random_pairs = combinations(random_records, 2))
-            candidate_pairs.update(combinations(random_records, 2))
+    #     elif len(records) > 100:
+    #         random_records = random.sample(sorted(records), 100)
+    #         # random_pairs = combinations(random_records, 2))
+    #         candidate_pairs.update(combinations(random_records, 2))
         # elif len(records) > 100:
             # print('echo', len(records))
 
     logger.info(f"Generated {len(candidate_pairs)} candidate pairs.")
 
     # Set a similarity threshold
-    similarity_threshold = 0.7
+    similarity_threshold = 0.5
 
     # Lists to store matched pairs and their similarity scores
     matched_pairs = set()
