@@ -9,6 +9,8 @@
 
 Kaggle Team Name: *Dignity*
 
+![](assets/dignity.jpg)
+
 ---
 
 This project focuses on resolving financial entities by leveraging Local Sensitive Hashing (LSH) to efficiently identify and match similar non-UBS entities in transaction records. It is tailored for the financial industry, where precision and scalability are very important.
